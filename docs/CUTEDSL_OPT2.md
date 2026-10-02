@@ -61,16 +61,21 @@ CUDA_VISIBLE_DEVICES=0 python3 bench/bench_bf16_cutedsl_router_e2e.py \
 
 Packed BF16 prefill now accepts request-local Q and KV lengths through
 `cu_seqlens_q` and `cu_seqlens_k`. Each request owns its logical Index-K page
-table, Router workspace, and optional hierarchical Top-16 workspace. Router
-outputs remain request-local logical block IDs and are copied into the
-corresponding Q slice of the global compact ID planes before the unchanged
-packed KV-centric CSR/LPT builder runs.
+table and causal offset. For the common single-partition Top-16 case, one
+packed CuTeDSL Router launch consumes descriptors for all request-local Q
+tiles, resolves request-local page-table ranges, and writes the global compact
+ID planes directly. The unchanged packed KV-centric CSR/LPT builder then
+consumes those logical block IDs.
 
-The coverage path deliberately favors robust semantics over final packed-grid
-tuning:
+The packed execution path has the following structure:
 
-- the CuTeDSL Router launches once per request and supports partial final Q
-  tiles;
+- the CuTeDSL Router launches once for the packed batch and supports partial
+  final Q tiles;
+- request-local Q starts are applied through a TMA tensor `domain_offset`, so
+  Q continues through the native TMA-to-SW128-to-UMMA pipeline without an
+  auxiliary staging kernel;
+- requests that require multiple hierarchical Top-16 partitions retain the
+  request-local fallback until packed Exact Top-K merge is implemented;
 - Fixed BSA stages each request in a packed-GQA-tile-aligned Q buffer. Padding
   is split between the Q prefix and a masked KV/Q suffix when necessary, so
   bottom-right causal positions and original KV block boundaries are preserved;
@@ -96,13 +101,12 @@ A second full-chain boundary case, `Q=[2047,2049]` and `KV=[2047,2049]`,
 forces KV-tail staging for requests with no prefix gap. It also matched the
 opt3 route, CSR, O, and LSE bitwise.
 
-A five-pair cold-L2 smoke run on the contiguous-page case measured
-0.767 ms for the CuTeDSL coverage path versus 0.658 ms for the opt3 Router
-(+16.49%). The approximately 0.109 ms delta includes two request-local Router
-launches plus Fixed-BSA staging and copies. It is not an optimized packed-grid
-result or a production performance qualification; the purpose of this
-checkpoint is complete variable-length semantics without a magnitude-level
-regression.
+A 21-pair alternating cold-L2 run on the contiguous-page case used six
+warmups and a 64 MiB flush before every sample. The packed CuTeDSL path
+measured 0.5990 ms versus 0.6441 ms for opt3, a 7.00% speedup. An independent
+11-pair run measured 0.5991 ms versus 0.6469 ms, a 7.40% speedup. These results
+include Router, unchanged packed CSR/LPT, Fixed BSA staging, Dynamic BSA, and
+the independent K2 online-softmax merge.
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
@@ -112,7 +116,7 @@ CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
   --full-chain --shuffle-index-pages
 
 CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
-  --full-chain --warmups 2 --pairs 5 --l2-flush-mib 64
+  --full-chain --warmups 6 --pairs 21 --l2-flush-mib 64
 
 CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
   --full-chain --q-lens 2047 2049 --kv-lens 2047 2049
@@ -120,10 +124,13 @@ CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
 
 ## Remaining opt2 work
 
-1. a production performance sweep for the new coverage shapes;
-2. replacement of request-local Router/Fixed launches with tuned packed-grid
-   variants where measurements justify the added complexity;
-3. evaluation of dense batch greater than one and additional Indexer
+1. a broader production performance sweep across request-count and length
+   distributions;
+2. a packed hierarchical Exact Top-K merge for requests that span multiple
+   Router partitions;
+3. replacement of request-local Fixed launches with a tuned packed-grid
+   variant where measurements justify the added complexity;
+4. evaluation of dense batch greater than one and additional Indexer
    precisions after packed BF16 is qualified.
 
 KV-centric CSR/LPT and host-side attention orchestration remain unchanged in

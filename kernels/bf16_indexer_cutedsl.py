@@ -1,11 +1,11 @@
 """BF16 SM103 Index Score with register-resident partition Top-16.
 
-This is the CuTeDSL router replacement for the production batch-one,
-contiguous prefill shape.  A CTA keeps one 128-query tile resident, streams a
-partition of 128-token K blocks through a three-stage TMA/UMMA pipeline, reduces
-each QK tile to one block score per query, and maintains an exact Top-16 in
-registers.  A second CuTeDSL kernel merges multiple partition lists into the
-exact global Top-16 and publishes the compact block-id planes consumed by CSR.
+This is the CuTeDSL router replacement for contiguous and packed BF16 prefill.
+A CTA keeps one request-local 128-query tile resident, streams a partition of
+128-token K blocks through a three-stage TMA/UMMA pipeline, reduces each QK
+tile to one block score per query, and maintains an exact Top-16 in registers.
+A second CuTeDSL kernel merges multiple partition lists into the exact global
+Top-16 and publishes the compact block-id planes consumed by CSR.
 
 The existing CSR/LPT and attention pipeline remains unchanged.
 """
@@ -60,6 +60,8 @@ class Bf16IndexerLocalTop16Sm103:
         compact_ids: bool = False,
         use_page_table: bool = False,
         logical_k_tail: bool = False,
+        packed_requests: bool = False,
+        packed_partitions: int = 1,
     ) -> None:
         if partition_blocks not in (1024, 2048, 4096, 8192):
             raise ValueError("partition_blocks must be 1024, 2048, 4096, or 8192")
@@ -68,6 +70,8 @@ class Bf16IndexerLocalTop16Sm103:
         self.compact_ids = bool(compact_ids)
         self.use_page_table = bool(use_page_table)
         self.logical_k_tail = bool(logical_k_tail)
+        self.packed_requests = bool(packed_requests)
+        self.packed_partitions = int(packed_partitions)
 
     @cute.jit
     def __call__(
@@ -75,6 +79,7 @@ class Bf16IndexerLocalTop16Sm103:
         q: cute.Tensor,
         k: cute.Tensor,
         page_indices: cute.Tensor,
+        tile_metadata: cute.Tensor,
         candidate_scores: cute.Tensor,
         candidate_ids: cute.Tensor,
         route: cute.Tensor,
@@ -141,11 +146,15 @@ class Bf16IndexerLocalTop16Sm103:
         kv_blocks = cute.ceil_div(effective_k_tokens, self.k_tile)
         partitions = cute.ceil_div(kv_blocks, self.partition_blocks)
         q_tiles = cute.ceil_div(total_q, self.q_tile)
+        if cutlass.const_expr(self.packed_requests):
+            q_tiles = tile_metadata.shape[0]
+            partitions = self.packed_partitions
         self.kernel(
             tiled_mma,
             tma_q,
             tma_k,
             page_indices,
+            tile_metadata,
             candidate_scores,
             candidate_ids,
             route,
@@ -170,6 +179,7 @@ class Bf16IndexerLocalTop16Sm103:
         tma_q: cpasync.TmaInfo,
         tma_k: cpasync.TmaInfo,
         mPageIndices: cute.Tensor,
+        mTileMetadata: cute.Tensor,
         mCandidateScores: cute.Tensor,
         mCandidateIds: cute.Tensor,
         mRoute: cute.Tensor,
@@ -186,18 +196,37 @@ class Bf16IndexerLocalTop16Sm103:
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         epi_tidx = tidx % Int32(self.epilogue_threads)
         hk = hq // (q_heads // k_heads)
-        q_tile_start = q_tile_idx * Int32(self.q_tile)
-        q_tile_last = q_tile_start + Int32(self.q_tile - 1)
-        if q_tile_last >= total_q:
-            q_tile_last = total_q - Int32(1)
+        q_begin = Int32(0)
+        q_end = total_q
+        q_local_tile = q_tile_idx
+        page_begin = Int32(0)
+        request_k_tokens = logical_k_tokens
+        request_partitions = (
+            logical_k_tokens
+            + Int32(self.k_tile * self.partition_blocks - 1)
+        ) // Int32(self.k_tile * self.partition_blocks)
+        if cutlass.const_expr(self.packed_requests):
+            q_begin = mTileMetadata[q_tile_idx, 0]
+            q_end = mTileMetadata[q_tile_idx, 1]
+            q_local_tile = mTileMetadata[q_tile_idx, 2]
+            page_begin = mTileMetadata[q_tile_idx, 3]
+            request_k_tokens = mTileMetadata[q_tile_idx, 4]
+            request_partitions = mTileMetadata[q_tile_idx, 5]
+        request_q_tokens = q_end - q_begin
+        q_local_start = q_local_tile * Int32(self.q_tile)
+        q_tile_start = q_begin + q_local_start
+        q_tile_last = q_local_start + Int32(self.q_tile - 1)
+        if q_tile_last >= request_q_tokens:
+            q_tile_last = request_q_tokens - Int32(1)
         kv_blocks = (
-            logical_k_tokens + Int32(self.k_tile - 1)
+            request_k_tokens + Int32(self.k_tile - 1)
         ) // Int32(self.k_tile)
         partition_begin = partition_idx * Int32(self.partition_blocks)
         partition_end = partition_begin + Int32(self.partition_blocks)
         if partition_end > kv_blocks:
             partition_end = kv_blocks
-        max_query_position = q_offset + q_tile_last
+        request_q_offset = request_k_tokens - request_q_tokens
+        max_query_position = request_q_offset + q_tile_last
         max_visible_blocks = (
             max_query_position + Int32(self.k_tile)
         ) // Int32(self.k_tile)
@@ -230,6 +259,8 @@ class Bf16IndexerLocalTop16Sm103:
         tCsK = thr_mma.partition_B(sK)
         mQ = tma_q.tma_tensor
         mK = tma_k.tma_tensor
+        if cutlass.const_expr(self.packed_requests):
+            mQ = cute.domain_offset((q_begin, 0, 0), mQ)
         gQ = cute.local_tile(
             mQ,
             (self.q_tile, self.head_dim),
@@ -304,13 +335,17 @@ class Bf16IndexerLocalTop16Sm103:
         cute.arch.mbarrier_init_fence()
         cute.arch.barrier()
 
-        has_work = partition_begin < partition_end and q_tile_start < total_q
+        has_work = (
+            partition_idx < request_partitions
+            and partition_begin < partition_end
+            and q_local_start < request_q_tokens
+        )
         if warp_idx == self.load_warp_id:
             if has_work:
                 q_empty = q_producer.acquire_and_advance()
                 cute.copy(
                     tma_q.atom,
-                    tQgQ[(None, q_tile_idx, 0, hq)],
+                    tQgQ[(None, q_local_tile, 0, hq)],
                     tQsQ[(None, q_empty.index)],
                     tma_bar_ptr=q_empty.barrier,
                 )
@@ -320,7 +355,7 @@ class Bf16IndexerLocalTop16Sm103:
                     # is translated through the logical-to-physical page map.
                     physical_block = block
                     if cutlass.const_expr(self.use_page_table):
-                        physical_block = mPageIndices[block]
+                        physical_block = mPageIndices[page_begin + block]
                     k_empty = k_producer.acquire_and_advance()
                     cute.copy(
                         tma_k.atom,
@@ -381,7 +416,8 @@ class Bf16IndexerLocalTop16Sm103:
             thread_coords = copy_thread.partition_D(tCcC)
             registers = cute.make_rmem_tensor(thread_coords.shape, Float32)
             row_reduced = cute.make_rmem_tensor((1,), Float32)
-            q_global = q_tile_start + epi_tidx
+            q_local = q_local_start + epi_tidx
+            q_global = q_begin + q_local
             visible_index = Int32(0)
             if has_work:
                 for block in cutlass.range(partition_begin, partition_end, unroll=1):
@@ -396,7 +432,7 @@ class Bf16IndexerLocalTop16Sm103:
                         [registers, row_reduced],
                     )
                     row_max = row_reduced[0]
-                    query_position = q_offset + q_global
+                    query_position = request_q_offset + q_local
                     valid_blocks = (
                         query_position + Int32(self.k_tile)
                     ) // Int32(self.k_tile)
@@ -404,7 +440,7 @@ class Bf16IndexerLocalTop16Sm103:
                     if local_begin < Int32(_PREFIX_BLOCKS):
                         local_begin = Int32(_PREFIX_BLOCKS)
                     dynamic_candidate = (
-                        q_global < total_q
+                        q_local < request_q_tokens
                         and block < valid_blocks
                         and block >= Int32(_PREFIX_BLOCKS)
                         and block < local_begin
@@ -430,7 +466,7 @@ class Bf16IndexerLocalTop16Sm103:
                     acc_pipeline.consumer_release_w_index(stage)
                     visible_index += Int32(1)
 
-            if q_global < total_q:
+            if q_local < request_q_tokens:
                 if cutlass.const_expr(self.direct_route):
                     for route_slot in cutlass.range_constexpr(_TOPK):
                         mRoute[hq, q_global, route_slot] = top_ids[route_slot]
@@ -705,11 +741,13 @@ def bf16_indexer_local_top16(
         # tensor so the generic call ABI needs no throwaway allocation.
         route = ids
     q_offset = logical_k_tokens - q.shape[0]
+    tile_metadata = page_indices[:1].view(1, 1)
     stream = cuda.CUstream(torch.cuda.current_stream(q.device).cuda_stream)
     args = (
         from_dlpack(q.detach(), assumed_align=16),
         from_dlpack(k.detach(), assumed_align=16),
         from_dlpack(page_indices, assumed_align=16),
+        from_dlpack(tile_metadata, assumed_align=4),
         from_dlpack(scores, assumed_align=16),
         from_dlpack(ids, assumed_align=16),
         from_dlpack(route, assumed_align=16),
@@ -736,6 +774,140 @@ def bf16_indexer_local_top16(
                 compact_ids=compact_ids,
                 use_page_table=use_page_table,
                 logical_k_tail=logical_k_tail,
+            ),
+            *args,
+            stream,
+        )
+        _COMPILE_CACHE[key] = compiled
+    compiled(*args, stream)
+    return scores, ids
+
+
+def bf16_indexer_packed_top16(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    *,
+    partition_blocks: int,
+    page_indices: torch.Tensor,
+    tile_metadata: torch.Tensor,
+    partitions: int,
+    out_compact_ids: torch.Tensor | None = None,
+    out_scores: torch.Tensor | None = None,
+    out_ids: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run one Router launch over request-local tiles in a packed Q tensor."""
+
+    if q.dtype != torch.bfloat16 or k.dtype != torch.bfloat16:
+        raise TypeError("packed BF16 Indexer requires BF16 Q/K")
+    if (
+        q.ndim != 3
+        or k.ndim != 3
+        or q.shape[2] != _HEAD_DIM
+        or k.shape[2] != _HEAD_DIM
+        or q.shape[1] % k.shape[1]
+    ):
+        raise ValueError("packed Q/K must be [tokens,heads,128]")
+    if (
+        not q.is_cuda
+        or not k.is_cuda
+        or q.device != k.device
+        or not q.is_contiguous()
+        or not k.is_contiguous()
+        or k.shape[0] % _BLOCK
+    ):
+        raise ValueError("packed Q/K must be contiguous CUDA tensors")
+    if (
+        page_indices.ndim != 1
+        or page_indices.dtype != torch.int32
+        or page_indices.device != q.device
+        or not page_indices.is_contiguous()
+    ):
+        raise ValueError("packed page_indices must be contiguous CUDA int32")
+    if (
+        tile_metadata.ndim != 2
+        or tile_metadata.shape[1] != 6
+        or tile_metadata.dtype != torch.int32
+        or tile_metadata.device != q.device
+        or not tile_metadata.is_contiguous()
+        or tile_metadata.shape[0] == 0
+    ):
+        raise ValueError("tile_metadata must be contiguous CUDA int32 [tiles,6]")
+    partitions = int(partitions)
+    if partitions <= 0:
+        raise ValueError("partitions must be positive")
+    compact_ids = out_compact_ids is not None
+    if compact_ids and partitions != 1:
+        raise ValueError("packed compact-ID emission requires one partition")
+    output_shape = (q.shape[1], partitions, q.shape[0], _TOPK)
+    if compact_ids:
+        if (
+            out_compact_ids.ndim != 3
+            or out_compact_ids.shape[0] != q.shape[1]
+            or out_compact_ids.shape[1] < 2 * _TOPK
+            or out_compact_ids.shape[2] != q.shape[0]
+            or out_compact_ids.dtype != torch.int32
+            or out_compact_ids.device != q.device
+            or not out_compact_ids.is_contiguous()
+        ):
+            raise ValueError(
+                "out_compact_ids must be contiguous CUDA int32 [H,>=32,Q]"
+            )
+        scores = out_compact_ids.view(torch.float32)
+        ids = out_compact_ids
+        route = out_compact_ids
+    else:
+        scores = out_scores
+        if scores is None:
+            scores = torch.empty(output_shape, dtype=torch.float32, device=q.device)
+        ids = out_ids
+        if ids is None:
+            ids = torch.empty(output_shape, dtype=torch.int32, device=q.device)
+        if (
+            tuple(scores.shape) != output_shape
+            or scores.dtype != torch.float32
+            or scores.device != q.device
+            or not scores.is_contiguous()
+            or tuple(ids.shape) != output_shape
+            or ids.dtype != torch.int32
+            or ids.device != q.device
+            or not ids.is_contiguous()
+        ):
+            raise ValueError("packed candidate workspaces have invalid layout")
+        route = ids
+
+    stream = cuda.CUstream(torch.cuda.current_stream(q.device).cuda_stream)
+    args = (
+        from_dlpack(q.detach(), assumed_align=16),
+        from_dlpack(k.detach(), assumed_align=16),
+        from_dlpack(page_indices, assumed_align=4),
+        from_dlpack(tile_metadata, assumed_align=4),
+        from_dlpack(scores, assumed_align=16),
+        from_dlpack(ids, assumed_align=16),
+        from_dlpack(route, assumed_align=16),
+        Int32(k.shape[0]),
+        Int32(0),
+    )
+    key = (
+        "packed",
+        q.device.index,
+        tuple(q.shape),
+        tuple(k.shape),
+        tuple(page_indices.shape),
+        tuple(tile_metadata.shape),
+        int(partition_blocks),
+        partitions,
+        compact_ids,
+    )
+    compiled = _COMPILE_CACHE.get(key)
+    if compiled is None:
+        compiled = cute.compile(
+            Bf16IndexerLocalTop16Sm103(
+                partition_blocks=partition_blocks,
+                direct_route=False,
+                compact_ids=compact_ids,
+                use_page_table=True,
+                packed_requests=True,
+                packed_partitions=partitions,
             ),
             *args,
             stream,
@@ -890,5 +1062,6 @@ def bf16_indexer_exact_route(
 __all__ = [
     "bf16_indexer_exact_route",
     "bf16_indexer_local_top16",
+    "bf16_indexer_packed_top16",
     "merge_bf16_indexer_exact_route",
 ]

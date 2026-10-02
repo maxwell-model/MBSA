@@ -11,6 +11,7 @@ import torch
 
 from kernels.bf16_indexer_cutedsl import (
     bf16_indexer_local_top16,
+    bf16_indexer_packed_top16,
     merge_bf16_indexer_exact_route,
 )
 from kernels.indexer_precision import (
@@ -524,6 +525,8 @@ class UnifiedC123AlignedChainPlan:
     cutedsl_partition_scores: torch.Tensor | None = None
     cutedsl_partition_ids: torch.Tensor | None = None
     cutedsl_packed_requests: tuple[CutedslPackedRouterRequest, ...] = ()
+    cutedsl_packed_pages: torch.Tensor | None = None
+    cutedsl_packed_tile_metadata: torch.Tensor | None = None
 
     def with_indexer_precision(
         self,
@@ -589,9 +592,25 @@ class UnifiedC123AlignedChainPlan:
             if self.cutedsl_index_k is None:
                 raise RuntimeError("CuTeDSL router workspace was not prepared")
             compact_ids = self.candidate_storage.view(torch.int32)
+            if self.cutedsl_packed_tile_metadata is not None:
+                if self.cutedsl_packed_pages is None:
+                    raise RuntimeError("packed CuTeDSL page table is missing")
+                bf16_indexer_packed_top16(
+                    self.index_q,
+                    self.cutedsl_index_k,
+                    partition_blocks=self.candidate_partition_blocks,
+                    page_indices=self.cutedsl_packed_pages,
+                    tile_metadata=self.cutedsl_packed_tile_metadata,
+                    partitions=1,
+                    out_compact_ids=compact_ids,
+                )
+                return
             if self.cutedsl_packed_requests:
                 for request in self.cutedsl_packed_requests:
                     request_q = self.index_q[request.q_begin : request.q_end]
+                    request_compact_ids = compact_ids[
+                        :, :, request.q_begin : request.q_end
+                    ]
                     if request.partition_scores is None:
                         bf16_indexer_local_top16(
                             request_q,
@@ -628,9 +647,8 @@ class UnifiedC123AlignedChainPlan:
                             // SPEC.block_size,
                             out=request.route,
                         )
-                    compact_ids[
-                        :, SPEC.dynamic_topk : 2 * SPEC.dynamic_topk,
-                        request.q_begin : request.q_end,
+                    request_compact_ids[
+                        :, SPEC.dynamic_topk : 2 * SPEC.dynamic_topk
                     ].copy_(request.route.permute(0, 2, 1))
                 return
             if (
@@ -1424,6 +1442,8 @@ def prepare_unified_c123_aligned_chain(
     cutedsl_partition_scores = None
     cutedsl_partition_ids = None
     cutedsl_packed_requests: tuple[CutedslPackedRouterRequest, ...] = ()
+    cutedsl_packed_pages = None
+    cutedsl_packed_tile_metadata = None
     if use_cutedsl_router and not attention.fixed_only:
         if not sm103_native:
             raise ValueError("the CuTeDSL router requires SM103")
@@ -1537,51 +1557,97 @@ def prepare_unified_c123_aligned_chain(
                     device=q.device,
                 )
         else:
-            packed_requests = []
-            for request_index, (q_len, kv_len, pages, kv_blocks) in enumerate(
-                zip(q_lens, kv_lens, request_pages, request_blocks)
-            ):
-                partitions = (
-                    kv_blocks + partition_blocks - 1
-                ) // partition_blocks
-                route = torch.empty(
-                    (SPEC.kv_heads, q_len, SPEC.dynamic_topk),
+            request_partitions = tuple(
+                (kv_blocks + partition_blocks - 1) // partition_blocks
+                for kv_blocks in request_blocks
+            )
+            if max(request_partitions) == 1:
+                cutedsl_packed_pages = torch.cat(request_pages).contiguous()
+                metadata = []
+                page_begin = 0
+                for request_index, (q_len, kv_len, kv_blocks) in enumerate(
+                    zip(q_lens, kv_lens, request_blocks)
+                ):
+                    for local_tile in range(
+                        (q_len + SPEC.block_size - 1) // SPEC.block_size
+                    ):
+                        metadata.append(
+                            (
+                                q_prefix[request_index],
+                                q_prefix[request_index + 1],
+                                local_tile,
+                                page_begin,
+                                kv_len,
+                                request_partitions[request_index],
+                            )
+                        )
+                    page_begin += kv_blocks
+                cutedsl_packed_tile_metadata = torch.tensor(
+                    metadata,
                     dtype=torch.int32,
                     device=q.device,
                 )
-                scores = None
-                ids = None
-                if partitions > 1:
-                    candidate_shape = (
-                        SPEC.kv_heads,
-                        partitions,
-                        q_len,
-                        SPEC.dynamic_topk,
-                    )
-                    scores = torch.empty(
-                        candidate_shape, dtype=torch.float32, device=q.device
-                    )
-                    ids = torch.empty(
-                        candidate_shape, dtype=torch.int32, device=q.device
-                    )
-                identity_pages = torch.arange(
+            else:
+                packed_requests = []
+                for request_index, (
+                    q_len,
+                    kv_len,
+                    pages,
                     kv_blocks,
-                    dtype=torch.int32,
-                    device=index_page_indices.device,
-                )
-                packed_requests.append(
-                    CutedslPackedRouterRequest(
-                        q_begin=q_prefix[request_index],
-                        q_end=q_prefix[request_index + 1],
-                        logical_k_tokens=kv_len,
-                        page_indices=pages,
-                        use_page_table=not torch.equal(pages, identity_pages),
-                        route=route,
-                        partition_scores=scores,
-                        partition_ids=ids,
+                    partitions,
+                ) in enumerate(
+                    zip(
+                        q_lens,
+                        kv_lens,
+                        request_pages,
+                        request_blocks,
+                        request_partitions,
                     )
-                )
-            cutedsl_packed_requests = tuple(packed_requests)
+                ):
+                    route = torch.empty(
+                        (SPEC.kv_heads, q_len, SPEC.dynamic_topk),
+                        dtype=torch.int32,
+                        device=q.device,
+                    )
+                    scores = None
+                    ids = None
+                    if partitions > 1:
+                        candidate_shape = (
+                            SPEC.kv_heads,
+                            partitions,
+                            q_len,
+                            SPEC.dynamic_topk,
+                        )
+                        scores = torch.empty(
+                            candidate_shape,
+                            dtype=torch.float32,
+                            device=q.device,
+                        )
+                        ids = torch.empty(
+                            candidate_shape,
+                            dtype=torch.int32,
+                            device=q.device,
+                        )
+                    identity_pages = torch.arange(
+                        kv_blocks,
+                        dtype=torch.int32,
+                        device=index_page_indices.device,
+                    )
+                    packed_requests.append(
+                        CutedslPackedRouterRequest(
+                            q_begin=q_prefix[request_index],
+                            q_end=q_prefix[request_index + 1],
+                            logical_k_tokens=kv_len,
+                            page_indices=pages,
+                            use_page_table=not torch.equal(
+                                pages, identity_pages
+                            ),
+                            route=route,
+                            partition_scores=scores,
+                            partition_ids=ids,
+                        )
+                    )
+                cutedsl_packed_requests = tuple(packed_requests)
     # Local Top16 requires the non-split 256-row Score tile. Short Q uses
     # the existing dense Score selector, with all capture-time storage prepared.
     dense_route_state = None
@@ -1629,6 +1695,8 @@ def prepare_unified_c123_aligned_chain(
         cutedsl_partition_scores=cutedsl_partition_scores,
         cutedsl_partition_ids=cutedsl_partition_ids,
         cutedsl_packed_requests=cutedsl_packed_requests,
+        cutedsl_packed_pages=cutedsl_packed_pages,
+        cutedsl_packed_tile_metadata=cutedsl_packed_tile_metadata,
         dense_route_state=dense_route_state,
         canonicalize_dynamic_padding=skv < 32768,
         fuse_dynamic_padding_in_csr=skv < 32768,

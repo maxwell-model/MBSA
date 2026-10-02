@@ -47,9 +47,10 @@ def main() -> None:
     parser.add_argument("--trace-stages", action="store_true")
     parser.add_argument("--warmups", type=int, default=0)
     parser.add_argument("--pairs", type=int, default=0)
+    parser.add_argument("--stage-pairs", type=int, default=0)
     parser.add_argument("--l2-flush-mib", type=int, default=64)
     args = parser.parse_args()
-    if args.pairs and not args.full_chain:
+    if (args.pairs or args.stage_pairs) and not args.full_chain:
         raise ValueError("timing requires --full-chain")
     q_lens = tuple(args.q_lens)
     kv_lens = tuple(args.kv_lens)
@@ -276,6 +277,46 @@ def main() -> None:
                     * 100.0,
                 }
             )
+        if args.stage_pairs:
+            flush_buffer = torch.empty(
+                args.l2_flush_mib * 1024 * 1024,
+                dtype=torch.uint8,
+                device=device,
+            )
+            stage_samples: dict[str, dict[str, list[float]]] = {
+                "opt3": {},
+                "cutedsl": {},
+            }
+            plans = (("opt3", baseline), ("cutedsl", candidate))
+            for index in range(args.stage_pairs):
+                order = plans if index % 2 == 0 else tuple(reversed(plans))
+                for plan_name, plan in order:
+                    stages = (
+                        ("router", plan.run_score),
+                        ("csr_lpt", plan.run_plan),
+                        ("fixed", plan.attention.run_fixed),
+                        ("dynamic", plan.attention.run_dynamic),
+                        ("merge", plan.attention.run_merge),
+                    )
+                    for stage_name, stage in stages:
+                        flush_buffer.add_(1)
+                        begin = torch.cuda.Event(enable_timing=True)
+                        end = torch.cuda.Event(enable_timing=True)
+                        begin.record()
+                        stage()
+                        end.record()
+                        end.synchronize()
+                        stage_samples[plan_name].setdefault(
+                            stage_name, []
+                        ).append(float(begin.elapsed_time(end)))
+            result["stage_samples_ms"] = stage_samples
+            result["stage_medians_ms"] = {
+                plan_name: {
+                    stage_name: statistics.median(samples)
+                    for stage_name, samples in per_stage.items()
+                }
+                for plan_name, per_stage in stage_samples.items()
+            }
     print(json.dumps(result, indent=2))
 
 
