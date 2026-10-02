@@ -1,7 +1,8 @@
-# Flash BSA: Independent Triton Baseline
+# Flash BSA: Triton Baseline and CuTeDSL Optimized Path
 
 ![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-3776ab)
 ![Triton](https://img.shields.io/badge/kernel-Triton-f47b60)
+![CuTeDSL](https://img.shields.io/badge/optimized-CuTeDSL-f47b60)
 ![Precision](https://img.shields.io/badge/precision-BF16-f8b89d)
 ![Status](https://img.shields.io/badge/status-correctness%20baseline-38251f)
 
@@ -14,6 +15,16 @@ The repository contains both a PyTorch executable specification and a GPU
 baseline. The PyTorch path defines the numerical contract; the Triton path
 implements the router, fixed attention, KV-major dynamic attention, and
 online-softmax state merge.
+
+The `aip/maxwell-v1-flash-bsa-cutedsl` branch additionally carries the
+`cutedsl-opt1` optimized path. It replaces Index Score generation and both
+levels of exact Top-K selection with CuTeDSL kernels while retaining the
+qualified Fixed BSA, Dynamic MSA, K2 combine, and CUDA CSR/LPT runtime.
+The original Triton baseline remains available as the numerical oracle and
+fallback implementation.
+
+See [docs/CUTEDSL_OPT1.md](docs/CUTEDSL_OPT1.md) for its execution contract,
+validated performance, reproduction command, and source boundary.
 
 <p align="center">
   <img src="docs/flash_bsa_execution.svg" width="100%" alt="Flash BSA Triton execution flow">
@@ -82,6 +93,10 @@ the log-sum-exp domain and writes the final output and LSE.
 - A CUDA GPU with BF16 Tensor Core support
 
 No compiled extension or external attention package is required.
+
+The statement above applies to the independent Triton baseline. The
+`cutedsl-opt1` path requires NVIDIA CuTeDSL/CUTLASS and builds its vendored
+CUDA CSR/LPT extension at runtime.
 
 ## Python API
 
@@ -175,6 +190,7 @@ details, workspace costs, known limitations, and the optimization roadmap.
 
 ## Source Provenance
 
-All implementation files in this branch were authored independently from the
-mathematical attention contract and public PyTorch, Triton, and CUDA runtime
-interfaces. See [PROVENANCE.md](PROVENANCE.md) for the precise source boundary.
+The `compass_bsa/` Triton baseline remains independently authored. The
+optimized path includes attributed third-party MSA and BSA runtime sources;
+their original license, notice, and copyright files are preserved. See
+[PROVENANCE.md](PROVENANCE.md) for the precise source boundary.

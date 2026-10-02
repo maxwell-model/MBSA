@@ -9,6 +9,10 @@ from typing import Any
 
 import torch
 
+from kernels.bf16_indexer_cutedsl import (
+    bf16_indexer_local_top16,
+    merge_bf16_indexer_exact_route,
+)
 from kernels.indexer_precision import (
     IndexerPrecision,
     require_sparse_score_support,
@@ -405,6 +409,7 @@ class UnifiedC123AlignedChainPlan:
     prefix_lens: torch.Tensor
     attention: UnifiedAlignedPrefillPlan
     candidate_partition_blocks: int
+    csr_candidate_partition_blocks: int
     score_flags: dict[str, bool]
     softmax_scale: float
     index_q_scale: float | None = None
@@ -415,6 +420,10 @@ class UnifiedC123AlignedChainPlan:
     fixed_stream: torch.cuda.Stream | None = None
     inputs_ready: torch.cuda.Event | None = None
     fixed_done: torch.cuda.Event | None = None
+    use_cutedsl_router: bool = False
+    cutedsl_index_k: torch.Tensor | None = None
+    cutedsl_partition_scores: torch.Tensor | None = None
+    cutedsl_partition_ids: torch.Tensor | None = None
 
     def with_indexer_precision(
         self,
@@ -444,6 +453,15 @@ class UnifiedC123AlignedChainPlan:
             device=self.index_q.device,
             max_seqlen_k=self.attention.max_seqlen_k,
         )
+        if self.use_cutedsl_router and precision is not IndexerPrecision.BF16:
+            raise ValueError("the CuTeDSL router currently supports BF16 only")
+        cutedsl_index_k = self.cutedsl_index_k
+        if self.use_cutedsl_router:
+            cutedsl_index_k = (
+                index_k.view(-1, 1, SPEC.head_dim)
+                if index_k.ndim == 4
+                else index_k
+            )
         return replace(
             self,
             index_q=index_q,
@@ -452,6 +470,7 @@ class UnifiedC123AlignedChainPlan:
             index_k_scale=k_scale,
             index_k_block_scale=index_k_block_scale,
             indexer_precision=precision,
+            cutedsl_index_k=cutedsl_index_k,
         )
     canonicalize_dynamic_padding: bool = False
     fuse_dynamic_padding_in_csr: bool = True
@@ -465,6 +484,37 @@ class UnifiedC123AlignedChainPlan:
 
     def run_score(self) -> None:
         if self.attention.fixed_only:
+            return
+        if self.use_cutedsl_router:
+            if self.cutedsl_index_k is None:
+                raise RuntimeError("CuTeDSL router workspace was not prepared")
+            compact_ids = self.candidate_storage.view(torch.int32)
+            if self.cutedsl_partition_scores is None:
+                bf16_indexer_local_top16(
+                    self.index_q,
+                    self.cutedsl_index_k,
+                    partition_blocks=self.candidate_partition_blocks,
+                    out_compact_ids=compact_ids,
+                )
+            else:
+                if self.cutedsl_partition_ids is None:
+                    raise RuntimeError("CuTeDSL partition IDs were not prepared")
+                bf16_indexer_local_top16(
+                    self.index_q,
+                    self.cutedsl_index_k,
+                    partition_blocks=self.candidate_partition_blocks,
+                    out_scores=self.cutedsl_partition_scores,
+                    out_ids=self.cutedsl_partition_ids,
+                )
+                merge_bf16_indexer_exact_route(
+                    self.cutedsl_partition_scores,
+                    self.cutedsl_partition_ids,
+                    q_offset=int(
+                        self.cutedsl_index_k.shape[0] - self.index_q.shape[0]
+                    ),
+                    kv_blocks=int(self.cutedsl_index_k.shape[0] // SPEC.block_size),
+                    out_compact_ids=compact_ids,
+                )
             return
         local_candidates = self.dense_route_state is None
         score_prefill(
@@ -490,6 +540,15 @@ class UnifiedC123AlignedChainPlan:
     def run_plan(self, *, route_ready: torch.Tensor | None = None) -> None:
         if self.attention.fixed_only:
             return
+        if self.use_cutedsl_router:
+            self.attention.build_dynamic_from_candidates(
+                self.candidate_storage,
+                self.prefix_lens,
+                candidate_partition_blocks=self.csr_candidate_partition_blocks,
+                canonicalize_dynamic_padding=self.fuse_dynamic_padding_in_csr,
+                route_ready=route_ready,
+            )
+            return
         if self.dense_route_state is not None:
             route, dynamic_indices = self.dense_route_state
             select_prefill_exact_per_group(
@@ -500,13 +559,13 @@ class UnifiedC123AlignedChainPlan:
             torch.gather(route, 2, dynamic_indices, out=self.attention.tile_plan.dynamic_route)
             self.attention.build_dynamic_from_candidates(
                 None, self.prefix_lens,
-                candidate_partition_blocks=self.candidate_partition_blocks,
+                candidate_partition_blocks=self.csr_candidate_partition_blocks,
             )
             return
         self.attention.build_dynamic_from_candidates(
             self.candidate_storage,
             self.prefix_lens,
-            candidate_partition_blocks=self.candidate_partition_blocks,
+            candidate_partition_blocks=self.csr_candidate_partition_blocks,
             canonicalize_dynamic_padding=self.fuse_dynamic_padding_in_csr,
             route_ready=route_ready,
         )
@@ -527,13 +586,23 @@ class UnifiedC123AlignedChainPlan:
                 raise RuntimeError("overlapped fixed attention is not prepared")
             current = torch.cuda.current_stream(self.index_q.device)
             self.inputs_ready.record(current)
-            # Enqueue the dominant Score kernel first. The fixed-support BSA
-            # then competes only for capacity the Score launch leaves idle.
-            self.run_score()
-            self.fixed_stream.wait_event(self.inputs_ready)
-            with torch.cuda.stream(self.fixed_stream):
-                self.attention.run_fixed()
-                self.fixed_done.record(self.fixed_stream)
+            if self.use_cutedsl_router:
+                # The specialized CuTeDSL Score kernel is short but launches
+                # enough CTAs to transiently occupy the device.  Give the
+                # longer fixed-support path launch priority, then use Score to
+                # fill the capacity it leaves available.
+                self.fixed_stream.wait_event(self.inputs_ready)
+                with torch.cuda.stream(self.fixed_stream):
+                    self.attention.run_fixed()
+                    self.fixed_done.record(self.fixed_stream)
+                self.run_score()
+            else:
+                # Preserve the measured opt3 launch order.
+                self.run_score()
+                self.fixed_stream.wait_event(self.inputs_ready)
+                with torch.cuda.stream(self.fixed_stream):
+                    self.attention.run_fixed()
+                    self.fixed_done.record(self.fixed_stream)
             self.run_plan()
             current.wait_event(self.fixed_done)
             self.attention.run_dynamic()
@@ -971,6 +1040,7 @@ def prepare_unified_c123_aligned_chain(
     cu_seqlens_q: torch.Tensor | None = None,
     cu_seqlens_k: torch.Tensor | None = None,
     dynamic_kernel_cfg: Any = None,
+    use_cutedsl_router: bool = False,
 ) -> UnifiedC123AlignedChainPlan:
     """Prepare the fused C123 producer to unified aligned-backend chain.
 
@@ -1042,16 +1112,23 @@ def prepare_unified_c123_aligned_chain(
         )
 
     blocks = (skv + SPEC.block_size - 1) // SPEC.block_size
-    if blocks <= 1024:
-        partition_blocks = 1024
-    elif blocks <= 2048:
-        partition_blocks = 2048
-    elif blocks <= 4096:
-        partition_blocks = 4096
-    elif blocks <= 8192:
-        partition_blocks = 8192
-    else:
+    if blocks > 8192:
         raise ValueError("unified backend supports total KV up to 1M")
+    if blocks <= 1024:
+        csr_partition_blocks = 1024
+    elif blocks <= 2048:
+        csr_partition_blocks = 2048
+    elif blocks <= 4096:
+        csr_partition_blocks = 4096
+    else:
+        csr_partition_blocks = 8192
+    if use_cutedsl_router:
+        # Keep the first-level search partition fixed so 256K--1M contexts
+        # exercise the hierarchical exact merge instead of degenerating to a
+        # single global register Top-16 pass.
+        partition_blocks = 1024
+    else:
+        partition_blocks = csr_partition_blocks
 
     sm103_native = torch.cuda.get_device_capability(q.device) == (10, 3)
     single_correction = sm103_native and skv >= 131072
@@ -1102,6 +1179,65 @@ def prepare_unified_c123_aligned_chain(
         cu_seqlens_k=cu_seqlens_k,
         dynamic_kernel_cfg=dynamic_kernel_cfg,
     )
+    cutedsl_index_k = None
+    cutedsl_partition_scores = None
+    cutedsl_partition_ids = None
+    if use_cutedsl_router and not attention.fixed_only:
+        if not sm103_native:
+            raise ValueError("the CuTeDSL router requires SM103")
+        if precision is not IndexerPrecision.BF16:
+            raise ValueError("the CuTeDSL router currently supports BF16 only")
+        if batch != 1 or total_q % SPEC.block_size or skv % SPEC.block_size:
+            raise ValueError(
+                "the CuTeDSL router requires block-aligned batch-one prefill"
+            )
+        if index_k.ndim == 4:
+            if tuple(index_k.shape[1:]) != (
+                1,
+                SPEC.block_size,
+                SPEC.head_dim,
+            ):
+                raise ValueError(
+                    "CuTeDSL index_k pages must be [pages,1,128,128]"
+                )
+            cutedsl_index_k = index_k.view(-1, 1, SPEC.head_dim)
+        elif index_k.ndim == 3:
+            if tuple(index_k.shape) != (skv, 1, SPEC.head_dim):
+                raise ValueError(
+                    "CuTeDSL index_k must be [Skv,1,128] when unpaged"
+                )
+            cutedsl_index_k = index_k
+        else:
+            raise ValueError("unsupported CuTeDSL index_k layout")
+        if int(cutedsl_index_k.shape[0]) != skv:
+            raise ValueError("CuTeDSL index_k storage must contain exactly Skv tokens")
+        expected_pages = torch.arange(
+            blocks,
+            dtype=torch.int32,
+            device=index_page_indices.device,
+        )
+        if not torch.equal(index_page_indices, expected_pages):
+            raise ValueError(
+                "the CuTeDSL router currently requires an identity index page table"
+            )
+        cutedsl_partitions = (blocks + partition_blocks - 1) // partition_blocks
+        if cutedsl_partitions > 1:
+            partition_shape = (
+                SPEC.kv_heads,
+                cutedsl_partitions,
+                total_q,
+                SPEC.dynamic_topk,
+            )
+            cutedsl_partition_scores = torch.empty(
+                partition_shape,
+                dtype=torch.float32,
+                device=q.device,
+            )
+            cutedsl_partition_ids = torch.empty(
+                partition_shape,
+                dtype=torch.int32,
+                device=q.device,
+            )
     # Local Top16 requires the non-split 256-row Score tile. Short Q uses
     # the existing dense Score selector, with all capture-time storage prepared.
     dense_route_state = None
@@ -1130,6 +1266,7 @@ def prepare_unified_c123_aligned_chain(
         prefix_lens=prefix_lens,
         attention=attention,
         candidate_partition_blocks=partition_blocks,
+        csr_candidate_partition_blocks=csr_partition_blocks,
         score_flags=score_flags,
         softmax_scale=SPEC.head_dim**-0.5,
         index_q_scale=index_q_scale,
@@ -1140,6 +1277,10 @@ def prepare_unified_c123_aligned_chain(
         fixed_stream=fixed_stream,
         inputs_ready=inputs_ready,
         fixed_done=fixed_done,
+        use_cutedsl_router=use_cutedsl_router,
+        cutedsl_index_k=cutedsl_index_k,
+        cutedsl_partition_scores=cutedsl_partition_scores,
+        cutedsl_partition_ids=cutedsl_partition_ids,
         dense_route_state=dense_route_state,
         canonicalize_dynamic_padding=skv < 32768,
         fuse_dynamic_padding_in_csr=skv < 32768,

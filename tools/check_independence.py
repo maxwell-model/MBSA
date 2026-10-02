@@ -9,6 +9,13 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+BASELINE_PATHS = (
+    ROOT / "compass_bsa",
+    ROOT / "bench" / "bench_opt4_gpu_v1.py",
+    ROOT / "bench" / "bench_triton_baseline.py",
+    ROOT / "tests" / "test_independent_v1.py",
+    ROOT / "tools" / "check_independence.py",
+)
 ALLOWED_IMPORT_ROOTS = (
     "__future__",
     "argparse",
@@ -40,7 +47,10 @@ def imported_modules(path: pathlib.Path) -> list[str]:
 
 def main() -> int:
     failures: list[str] = []
-    for path in sorted(ROOT.rglob("*.py")):
+    paths: list[pathlib.Path] = []
+    for scope in BASELINE_PATHS:
+        paths.extend(scope.rglob("*.py") if scope.is_dir() else (scope,))
+    for path in sorted(paths):
         for module in imported_modules(path):
             root = module.split(".", 1)[0]
             if root not in ALLOWED_IMPORT_ROOTS:

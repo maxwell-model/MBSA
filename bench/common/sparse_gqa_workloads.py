@@ -223,6 +223,7 @@ def build_overlap(
     prepare_lpt_schedule: bool | None = None,
     dynamic_kernel_cfg=None,
     bsa_variant=None,
+    use_cutedsl_router: bool = False,
 ):
     """Build the fixed-BSA/Score overlap candidate for a prepared case."""
     source = base.unified.attention.tile_plan
@@ -271,6 +272,7 @@ def build_overlap(
         partial_dtype=partial_dtype,
         fuse_fixed_state_in_dynamic_combine=True,
         overlap_fixed_score=True,
+        use_cutedsl_router=use_cutedsl_router,
         **optional_schedule,
     )
     return plan
