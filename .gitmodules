@@ -1,0 +1,3 @@
+[submodule "third_party/msa/python/fmha_sm100/cutlass"]
+	path = third_party/msa/python/fmha_sm100/cutlass
+	url = https://github.com/NVIDIA/cutlass.git

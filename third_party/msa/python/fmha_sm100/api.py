@@ -1,0 +1,1536 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 MiniMax
+# SPDX-License-Identifier: MIT
+
+"""FMHA varlen attention API: plan + run for SM100.
+
+fmha_sm100_plan and fmha_sm100.
+
+Doc is REPO/docs/fmha_sm100_api.md
+"""
+
+import math
+from typing import Optional, Tuple, Union
+
+__all__ = [
+    "fmha_sm100_plan", "fmha_sm100", "sparse_topk_select",
+    "_fmha_sm100_plan", "_fmha_sm100",
+]
+
+import numpy as np
+import torch
+
+from .jit import _dlpack_dtype_code, _PACK_FACTORS, get_fmha_variant, get_reduction_module, get_plan_fn, get_sparse_topk_module
+from .sparse_fmha_adapter import sparse_fmha, sparse_fmha_plan
+
+
+# Pinned, not plain numpy: the host-to-device copy below is illegal inside a
+# CUDA graph capture unless its source is pinned, which is what stopped vLLM
+# from capturing a model that plans through here. A view of pinned storage
+# stays pinned, so the numpy alias is only for the assignment syntax.
+_pin_staging = torch.empty(4096 * 1024, dtype=torch.int32, pin_memory=True)
+_np_staging = _pin_staging.numpy()
+_np_staging_offset = 0
+
+def _reset_np_staging():
+    global _np_staging_offset
+    _np_staging_offset = 0
+
+def _plan_buf_from_list(data, device):
+    global _np_staging, _np_staging_offset, _pin_staging
+    n = len(data)
+    end = _np_staging_offset + n
+    if end > _np_staging.shape[0]:
+        _pin_staging = torch.empty(
+            max(end, _np_staging.shape[0] * 2), dtype=torch.int32, pin_memory=True
+        )
+        _np_staging = _pin_staging.numpy()
+        _np_staging_offset = 0
+        end = n
+    _np_staging[_np_staging_offset:end] = data
+    buf = torch.empty(n, dtype=torch.int32, device=device)
+    # `_reset_np_staging()` deliberately reuses this pinned host allocation for
+    # every plan.  A non-blocking H2D copy lets the next plan overwrite a slice
+    # while DMA for the previous plan still reads it, corrupting otherwise
+    # owning GPU metadata (most visibly kv_segment_lens and qo_offset during a
+    # long sequential chunk replay).  Planning is outside the execution/timing
+    # window, so complete each tiny metadata copy before the host slice may be
+    # reused.  Runtime graph refresh uses device tensors and is unaffected.
+    buf.copy_(_pin_staging[_np_staging_offset:end], non_blocking=False)
+    _np_staging_offset = end
+    return buf
+
+from enum import IntEnum, auto
+
+class _BuffTag(IntEnum):
+    fmha_sm100_cutlass_workspace = auto()
+
+    packed_work_range = auto()
+    packed_work_info = auto()
+    kv_tile_begin_indices = auto()
+    kv_tile_end_indices = auto()
+    kv_split_indices = auto()
+    plan_cost = auto()
+    num_kv_splits_per_row = auto()
+    workspace_lse = auto()
+
+    workspace_o = auto()
+
+    sparse_topk_workspace = auto()
+
+    Total = auto()
+
+
+_workspace_cache = [[None] * _BuffTag.Total for _ in range(16)]
+# _workspace_cache_per_plan = []
+
+def _new_ws_cache():
+    pass
+    # global _workspace_cache
+    # if len(_workspace_cache) == 0:
+    #     print("new")
+    #     _workspace_cache_per_plan.append([[None] * _BuffTag.Total for _ in range(16)])
+
+def _alloc_workspace_buf(tag, size, device, dtype):
+    global _workspace_cache
+    device_id = torch.device(device).index
+    buf = _workspace_cache[device_id][tag]
+    if buf is not None and buf.shape[0] >= size:
+        return buf
+    buf = torch.empty(size, dtype=dtype, device=device)
+    _workspace_cache[device_id][tag] = buf
+    return buf
+
+def _get_workspace_buf(tag, device):
+    global _workspace_cache
+    device_id = torch.device(device).index
+    return _workspace_cache[device_id][tag]
+
+def _alloc_perplan_buf(tag, size, device, dtype):
+    # global _workspace_cache
+    # device_id = torch.device(device).index
+    # buf = _workspace_cache[-1][device_id][tag]
+    # if buf is not None and buf.shape[0] >= size:
+    #     return buf
+    buf = torch.empty(size, dtype=dtype, device=device)
+    # _workspace_cache[-1][device_id][tag] = buf
+    return buf
+
+_NUM_CTA = None
+def _get_num_cta(device):
+    global _NUM_CTA
+    if _NUM_CTA is None:
+        _NUM_CTA = torch.cuda.get_device_properties(device).multi_processor_count
+    return _NUM_CTA
+
+def _compute_pack_factor(max_qo_len, num_qo_heads, num_kv_heads):
+    if num_kv_heads == -1:
+        return 1
+    h_r = num_qo_heads // num_kv_heads
+    if h_r <= 1 or max_qo_len <= 0 or max_qo_len > 32:
+        return 1
+    max_pf = 128 // max_qo_len
+    for pf in reversed(_PACK_FACTORS):
+        if pf <= max_pf and pf <= h_r and h_r % pf == 0:
+            return pf
+    return 1
+
+def _to_device(t, d):
+    return t.to(d, non_blocking=True) if t is not None else None
+
+def _prefill_qlen_threshold(sparse):
+    return 32 if sparse else 128
+
+def _validate_fmha_inputs(
+    q, k, v, qo_segment_lens, kv_segment_lens,
+    num_qo_heads, num_kv_heads, head_dim_qk, head_dim_vo,
+    batch_size, qo_total_len, is_paged,
+    kv_indices, kv_block_indexes, qo_offset, page_size,
+    pack_factor=1,
+    packed_work_range=None, packed_work_info=None,
+    num_kv_splits=1,
+    kv_tile_begin_indices=None, kv_tile_end_indices=None, kv_split_indices=None,
+    qo_segment_offsets=None, kv_page_indptr=None,
+):
+    assert q.dim() == 3, f"q must be [total_qo_len, num_qo_heads, head_dim], got {q.shape}"
+    assert num_qo_heads % num_kv_heads == 0, (
+        f"num_qo_heads ({num_qo_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+    )
+    assert qo_segment_lens.dim() == 1, f"qo_segment_lens must be 1D, got {qo_segment_lens.shape}"
+    assert kv_segment_lens.dim() == 1, f"kv_segment_lens must be 1D, got {kv_segment_lens.shape}"
+    assert qo_segment_lens.shape[0] == batch_size
+    assert kv_segment_lens.shape[0] == batch_size
+
+    qo_lens_cpu = qo_segment_lens.cpu()
+    kv_lens_cpu = kv_segment_lens.cpu()
+
+    expected_qo_total = qo_total_len * pack_factor if pack_factor > 1 else qo_total_len
+    assert qo_lens_cpu.sum().item() == expected_qo_total, (
+        f"sum(qo_segment_lens)={qo_lens_cpu.sum().item()} != expected={expected_qo_total} "
+        f"(q.shape[0]={qo_total_len}, pack_factor={pack_factor})"
+    )
+
+    if is_paged:
+        assert k.dim() == 4, f"paged K must be [total_pages, H_kv, page_size, D], got {k.shape}"
+        assert v.dim() == 4, f"paged V must be [total_pages, H_kv, page_size, D], got {v.shape}"
+        total_pages = k.shape[0]
+        assert k.shape[1] == num_kv_heads
+        assert k.shape[2] == page_size
+        assert v.shape[0] == total_pages
+        assert v.shape[1] == num_kv_heads
+        assert v.shape[2] == page_size
+    else:
+        total_kv_len = k.shape[0]
+        assert kv_lens_cpu.sum().item() == total_kv_len, (
+            f"sum(kv_segment_lens)={kv_lens_cpu.sum().item()} != k.shape[0]={total_kv_len}"
+        )
+
+    if qo_offset is not None:
+        assert qo_offset.dim() == 1 and qo_offset.shape[0] == batch_size, (
+            f"qo_offset must be [batch_size={batch_size}], got {qo_offset.shape}"
+        )
+        # off_cpu = qo_offset.cpu()
+        # assert (off_cpu >= 0).all(), (
+        #     f"qo_offset must be non-negative, got min={off_cpu.min().item()}"
+        # )
+        # unpacked_qo_lens = qo_lens_cpu // pack_factor if pack_factor > 1 else qo_lens_cpu
+        # max_offsets = kv_lens_cpu - unpacked_qo_lens
+        # violations = off_cpu > max_offsets
+        # if violations.any():
+        #     b = violations.nonzero()[0].item()
+        #     assert False, (
+        #         f"qo_offset[{b}]={off_cpu[b].item()} > kv_len-qo_len="
+        #         f"{kv_lens_cpu[b].item()}-{qo_lens_cpu[b].item()}={max_offsets[b].item()}"
+        #     )
+
+    if kv_indices is not None and kv_block_indexes is None:
+        assert is_paged, "kv_indices provided but K/V are not paged (4D)"
+        kvi_cpu = kv_indices.cpu()
+        total_pages_in_table = kvi_cpu.shape[0]
+        total_pages_needed = sum(
+            (kv_lens_cpu[b].item() + page_size - 1) // page_size for b in range(batch_size)
+        )
+        assert total_pages_in_table == total_pages_needed, (
+            f"kv_indices length {total_pages_in_table} != "
+            f"sum(ceil(kv_segment_lens/page_size))={total_pages_needed}"
+        )
+        total_pages = k.shape[0]
+        assert (kvi_cpu >= 0).all() and (kvi_cpu < total_pages).all(), (
+            f"kv_indices has values outside [0, {total_pages}): "
+            f"min={kvi_cpu.min().item()}, max={kvi_cpu.max().item()}"
+        )
+
+    if kv_block_indexes is not None:
+        assert is_paged, "sparse mode requires paged KV (kv_indices)"
+        assert kv_indices is not None, "sparse mode requires kv_indices"
+        assert kv_block_indexes.dim() == 3, (
+            f"kv_block_indexes must be [total_qo_len, H_kv, KVBlockNum], got {kv_block_indexes.shape}"
+        )
+        assert kv_block_indexes.shape[0] == qo_total_len, (
+            f"kv_block_indexes must be [total_qo_len={qo_total_len}, H_kv, KVBlockNum], got {kv_block_indexes.shape}"
+        )
+        assert kv_block_indexes.shape[1] == num_kv_heads
+
+        bi_cpu = kv_block_indexes.cpu()
+        valid_mask = (bi_cpu != -1)
+        assert ((bi_cpu >= 0) | (bi_cpu == -1)).all(), (
+            "kv_block_indexes must contain only non-negative indices or -1"
+        )
+        assert (valid_mask[:, :, :-1] >= valid_mask[:, :, 1:]).all(), (
+            "kv_block_indexes: -1 padding must be at the end"
+        )
+        unpacked_qo_lens = qo_lens_cpu // pack_factor if pack_factor > 1 else qo_lens_cpu
+        batch_of_qtoken = torch.repeat_interleave(
+            torch.arange(batch_size), unpacked_qo_lens)
+        kv_lens_per_qtoken = kv_lens_cpu[batch_of_qtoken]
+        num_pages = ((kv_lens_per_qtoken + page_size - 1) // page_size).view(-1, 1, 1)
+        assert (bi_cpu[valid_mask] < num_pages.expand_as(bi_cpu)[valid_mask]).all(), (
+            "kv_block_indexes: index out of range for batch page count"
+        )
+        both_valid = valid_mask[:, :, :-1] & valid_mask[:, :, 1:]
+        if both_valid.any():
+            assert (bi_cpu[:, :, 1:][both_valid] > bi_cpu[:, :, :-1][both_valid]).all(), (
+                "kv_block_indexes: must be strictly ascending"
+            )
+
+    if qo_segment_offsets is not None:
+        off_cpu = qo_segment_offsets.cpu()
+        assert off_cpu.shape[0] == batch_size + 1, (
+            f"qo_segment_offsets must have {batch_size + 1} elements, got {off_cpu.shape[0]}"
+        )
+        assert off_cpu[0].item() == 0, f"qo_segment_offsets[0]={off_cpu[0].item()} != 0"
+        assert off_cpu[-1].item() == expected_qo_total, (
+            f"qo_segment_offsets[-1]={off_cpu[-1].item()} != expected={expected_qo_total}"
+        )
+        diffs = off_cpu[1:] - off_cpu[:-1]
+        assert (diffs >= 0).all(), "qo_segment_offsets must be non-decreasing"
+        assert (diffs == qo_lens_cpu).all(), "qo_segment_offsets must be cumsum of qo_segment_lens"
+
+    if kv_page_indptr is not None:
+        ip_cpu = kv_page_indptr.cpu()
+        assert ip_cpu.shape[0] == batch_size + 1, (
+            f"kv_page_indptr must have {batch_size + 1} elements, got {ip_cpu.shape[0]}"
+        )
+        assert ip_cpu[0].item() == 0, f"kv_page_indptr[0]={ip_cpu[0].item()} != 0"
+        assert (ip_cpu[1:] >= ip_cpu[:-1]).all(), "kv_page_indptr must be non-decreasing"
+        if kv_indices is not None:
+            assert ip_cpu[-1].item() <= kv_indices.shape[0], (
+                f"kv_page_indptr[-1]={ip_cpu[-1].item()} > kv_indices.size={kv_indices.shape[0]}"
+            )
+
+    if packed_work_range is not None and packed_work_info is not None:
+        import math
+        pwr_cpu = packed_work_range.cpu()
+        pwi_cpu = packed_work_info.cpu()
+        num_ctas = pwr_cpu.shape[0]
+        max_work_idx = pwi_cpu.shape[0]
+
+        packed_num_heads = num_qo_heads // pack_factor if pack_factor > 1 else num_qo_heads
+        qo_tile_size = 128 if int(qo_lens_cpu.max()) <= 128 else 256
+        max_tiles_per_batch = [(int(l) + qo_tile_size - 1) // qo_tile_size for l in qo_lens_cpu]
+
+        for cta in range(num_ctas):
+            r = int(pwr_cpu[cta].item())
+            start = r & 0xFFFFFFFF
+            end = (r >> 32) & 0xFFFFFFFF
+            assert start <= end, (
+                f"packed_work_range[{cta}]: start={start} > end={end}"
+            )
+            assert end <= max_work_idx, (
+                f"packed_work_range[{cta}]: end={end} > packed_work_info.size={max_work_idx}"
+            )
+            for wi in range(start, end):
+                packed = int(pwi_cpu[wi].item())
+                bi = packed & 0xFFFF
+                hi = (packed >> 16) & 0xFFFF
+                qo_tile = (packed >> 32) & 0xFFFFFFFF
+                assert bi < batch_size, (
+                    f"packed_work_info[{wi}]: batch_idx={bi} >= batch_size={batch_size}"
+                )
+                assert hi < packed_num_heads, (
+                    f"packed_work_info[{wi}]: head_idx={hi} >= packed_num_heads={packed_num_heads}"
+                )
+                assert qo_tile < max_tiles_per_batch[bi], (
+                    f"packed_work_info[{wi}]: qo_tile={qo_tile} >= max_tiles={max_tiles_per_batch[bi]} "
+                    f"for batch {bi} (qo_len={int(qo_lens_cpu[bi])})"
+                )
+
+        # Verify completeness: every (batch, head, qo_tile) must appear exactly once
+        # (for num_kv_splits=1) or exactly num_splits times (for split-KV, each with
+        # a different split index covering the full KV range).
+        expected = set()
+        for bi in range(batch_size):
+            for hi in range(packed_num_heads):
+                for qt in range(max_tiles_per_batch[bi]):
+                    expected.add((bi, hi, qt))
+
+        seen = {}
+        for cta in range(num_ctas):
+            r = int(pwr_cpu[cta].item())
+            start = r & 0xFFFFFFFF
+            end = (r >> 32) & 0xFFFFFFFF
+            for wi in range(start, end):
+                packed = int(pwi_cpu[wi].item())
+                bi = packed & 0xFFFF
+                hi = (packed >> 16) & 0xFFFF
+                qt = (packed >> 32) & 0xFFFFFFFF
+                key = (bi, hi, qt)
+                seen[key] = seen.get(key, 0) + 1
+
+        missing = expected - set(seen.keys())
+        assert not missing, (
+            f"plan missing {len(missing)} work items, e.g. {list(missing)[:5]}"
+        )
+
+        if num_kv_splits <= 1:
+            duplicates = {k: v for k, v in seen.items() if v > 1}
+            assert not duplicates, (
+                f"plan has {len(duplicates)} duplicated work items (nosplit), e.g. {list(duplicates.items())[:5]}"
+            )
+
+        if num_kv_splits > 1 and kv_tile_begin_indices is not None:
+            tb_cpu = kv_tile_begin_indices.cpu()
+            te_cpu = kv_tile_end_indices.cpu()
+            sp_cpu = kv_split_indices.cpu()
+
+            from collections import defaultdict
+            tile_splits = defaultdict(list)
+
+            for cta in range(num_ctas):
+                r = int(pwr_cpu[cta].item())
+                start = r & 0xFFFFFFFF
+                end = (r >> 32) & 0xFFFFFFFF
+                for wi in range(start, end):
+                    tb, te = int(tb_cpu[wi].item()), int(te_cpu[wi].item())
+                    assert tb <= te, (
+                        f"kv_tile_begin[{wi}]={tb} > kv_tile_end[{wi}]={te}"
+                    )
+                    sp = int(sp_cpu[wi].item())
+                    assert 0 <= sp < num_kv_splits, (
+                        f"kv_split_indices[{wi}]={sp} out of range [0, {num_kv_splits})"
+                    )
+                    packed = int(pwi_cpu[wi].item())
+                    key = (packed & 0xFFFF, (packed >> 16) & 0xFFFF,
+                           (packed >> 32) & 0xFFFFFFFF)
+                    tile_splits[key].append((tb, te, sp))
+
+            is_sparse = kv_block_indexes is not None
+            kv_tile_size = 256 if qo_tile_size == 128 else 128
+            for key, splits in tile_splits.items():
+                bi, hi, qt = key
+                if is_sparse:
+                    kv_block_num = kv_block_indexes.shape[2]
+                    kl = kv_block_num * page_size
+                    off_q = kl - int(qo_lens_cpu[bi])
+                else:
+                    kl = int(kv_lens_cpu[bi])
+                    off_q = int(qo_offset[bi].cpu()) if qo_offset is not None else (kl - int(qo_lens_cpu[bi]))
+                packed_q_end = (qt + 1) * qo_tile_size
+                q_end = (packed_q_end - 1) // pack_factor + 1 if pack_factor > 1 else packed_q_end
+                eff_kv = min(q_end + off_q, kl)
+                expected_iters = max(0, (eff_kv + kv_tile_size - 1) // kv_tile_size)
+                splits_sorted = sorted(splits, key=lambda x: x[0])
+                if expected_iters > 0:
+                    assert splits_sorted[0][0] == 0, (
+                        f"tile {key}: first split begins at {splits_sorted[0][0]}, expected 0"
+                    )
+                    assert splits_sorted[-1][1] == expected_iters, (
+                        f"tile {key}: last split ends at {splits_sorted[-1][1]}, expected {expected_iters}"
+                    )
+                for i in range(1, len(splits_sorted)):
+                    prev_end = splits_sorted[i - 1][1]
+                    curr_begin = splits_sorted[i][0]
+                    assert prev_end == curr_begin, (
+                        f"tile {key}: gap/overlap at split boundary: "
+                        f"prev_end={prev_end}, curr_begin={curr_begin}"
+                    )
+                sub_ids = sorted(s[2] for s in splits_sorted)
+                expected_ids = list(range(len(splits_sorted)))
+                assert sub_ids == expected_ids, (
+                    f"tile {key}: sub_ids {sub_ids} not contiguous 0..{len(splits_sorted)-1}"
+                )
+
+
+def _expand_for_per_token_sparse(qo_lens, kv_lens, qo_offset, page_size, pack_factor=1):
+    B = len(qo_lens)
+    total_q = sum(qo_lens)
+
+    if qo_offset is None:
+        qo_offset = [kv_lens[i] - qo_lens[i] for i in range(B)]
+
+    kv_page_indptr = [0]
+    acc = 0
+    for k in kv_lens:
+        acc += (k + page_size - 1) // page_size
+        kv_page_indptr.append(acc)
+
+    expanded_qo_lens = [pack_factor] * total_q
+    expanded_kv_lens = [0] * total_q
+    expanded_qo_offset = [0] * total_q
+    expanded_kv_page_indptr = [0] * (total_q + 1)
+
+    idx = 0
+    for b in range(B):
+        kv_len_b = kv_lens[b]
+        qo_offset_b = qo_offset[b]
+        kv_page_indptr_b = kv_page_indptr[b]
+        for j in range(qo_lens[b]):
+            expanded_kv_lens[idx] = kv_len_b
+            expanded_qo_offset[idx] = qo_offset_b + j
+            expanded_kv_page_indptr[idx] = kv_page_indptr_b
+            idx += 1
+
+    expanded_kv_page_indptr[total_q] = kv_page_indptr[B]
+
+    return expanded_qo_lens, expanded_kv_lens, expanded_qo_offset, expanded_kv_page_indptr
+
+class PlanInfo(dict):
+    """Execution plan returned by the internal dense FMHA planner.
+
+    Users normally receive the public tuple returned by ``fmha_sm100_plan`` and
+    pass it unchanged to ``fmha_sm100``.  The dictionary stores CUDA worklists,
+    sequence metadata, split-KV workspaces, and cached buffers owned by the
+    plan.
+    """
+
+    def __del__(self):
+        pass
+        # print("del")
+        # _workspace_cache_per_plan.append(self["_ws_cache"])
+
+def _make_plan_info(
+    packed_work_range, packed_work_info,
+    kv_tile_begin_indices, kv_tile_end_indices, kv_split_indices,
+    num_kv_splits, workspace_o, workspace_lse,
+    max_qo_len, predicted_speedup, num_kv_splits_per_row,
+    qo_segment_offsets, kv_segment_offsets, kv_page_indptr, max_k_tiles,
+    qo_segment_lens, kv_segment_lens, qo_offset,
+    pack_factor, orig_num_qo_heads,
+    qo_len_uniform, cute_workspace_buffer,
+    score_reduce="max"
+):
+    # ws = _workspace_cache_per_plan.pop()
+    # print("pop")
+    return PlanInfo({
+        # "_ws_cache" : ws,
+        "packed_work_range": packed_work_range,
+        "packed_work_info": packed_work_info,
+        "kv_tile_begin_indices": kv_tile_begin_indices,
+        "kv_tile_end_indices": kv_tile_end_indices,
+        "kv_split_indices": kv_split_indices,
+        "num_kv_splits": num_kv_splits,
+        "workspace_o": workspace_o,
+        "workspace_lse": workspace_lse,
+        "max_qo_len": max_qo_len,
+        "predicted_speedup": predicted_speedup,
+        "num_kv_splits_per_row": num_kv_splits_per_row,
+        "qo_segment_offsets": qo_segment_offsets,
+        "kv_segment_offsets": kv_segment_offsets,
+        "kv_page_indptr": kv_page_indptr,
+        "max_k_tiles": max_k_tiles,
+        "qo_segment_lens": qo_segment_lens,
+        "kv_segment_lens": kv_segment_lens,
+        "qo_offset": qo_offset,
+        "pack_factor": pack_factor,
+        "orig_num_qo_heads": orig_num_qo_heads,
+        "qo_len_uniform": qo_len_uniform,
+        "cute_workspace_buffer": cute_workspace_buffer,
+        "score_reduce": score_reduce,
+        "MM-SA-Nv":False
+    })
+
+
+def _call_plan(qo_segment_offsets, qo_segment_lens, kv_segment_lens,
+               packed_work_range, packed_work_info,
+               qo_tile_size, kv_tile_size, num_qo_heads, num_ctas, causal,
+               qo_offset, num_kv_splits,
+               kv_tile_begin_indices, kv_tile_end_indices, kv_split_indices,
+               chunk_size, out_max_sm_cost, num_kv_splits_per_row, workspace_lse, lse_total_size,
+               pack_factor, cuda_stream=None,
+               ):
+
+    plan_module = get_plan_fn()
+
+    if cuda_stream is None:
+        cuda_stream = torch.cuda.current_stream().cuda_stream
+    plan_module.plan(
+        qo_segment_offsets, qo_segment_lens, kv_segment_lens,
+        packed_work_range, packed_work_info,
+        qo_tile_size, kv_tile_size, num_qo_heads, num_ctas, causal,
+        qo_offset, num_kv_splits,
+        kv_tile_begin_indices, kv_tile_end_indices, kv_split_indices,
+        chunk_size, out_max_sm_cost, num_kv_splits_per_row,
+        cuda_stream,
+        workspace_lse, lse_total_size,
+        pack_factor,
+    )
+
+def _fmha_sm100_plan(
+    qo_segment_lens: torch.Tensor,
+    kv_segment_lens: torch.Tensor,
+    num_qo_heads: int,
+    num_kv_heads: int = -1,
+    qo_offset: Optional[Union[int, torch.Tensor]] = None,
+    num_kv_splits: int = -1,
+    page_size: int = -1,
+    output_maxscore: bool = False,
+    kv_block_num: int = -1,
+    usable_SM_count: int = -1,
+    causal: bool = True,
+    sparse_kernel_mode: str = 'auto',
+    use_fp8_kvcache: bool = False,
+    score_reduce: str = "max",
+    device = None,
+    stream = None
+):
+    if score_reduce not in ("max", "sum"):
+        raise ValueError(
+            f"score_reduce must be 'max' or 'sum', got {score_reduce!r}")
+    if score_reduce == "sum" and not output_maxscore:
+        # The sum is emitted from the same GMEM write as the max, which only
+        # the OnlyScore/Full score path performs.
+        raise ValueError("score_reduce='sum' requires output_maxscore=True")
+    device = torch.cuda.current_device() if device is None else device
+    _reset_np_staging()
+
+    qo_lens = qo_segment_lens.tolist()
+    max_qo_len_orig = max(qo_lens) if qo_lens else 0
+
+    if kv_block_num > 0 and (sparse_kernel_mode == 'prefill' or (sparse_kernel_mode == 'auto' and max_qo_len_orig > _prefill_qlen_threshold(True))):
+        # print("Nv-Prefill")
+        qo_segment_lens = qo_segment_lens.to(device)
+        kv_segment_lens = kv_segment_lens.to(device)
+        qo_offset = qo_offset.to(device)
+        return sparse_fmha_plan(qo_segment_lens=qo_segment_lens, kv_segment_lens=kv_segment_lens,
+                num_qo_heads=num_qo_heads, causal=causal, qo_offset=qo_offset,
+                num_kv_splits=num_kv_splits, page_size=page_size, output_maxscore=output_maxscore,
+                kv_block_num=kv_block_num, num_kv_heads=num_kv_heads, usable_SM_count=usable_SM_count,
+                use_fp8_kvcache=use_fp8_kvcache)
+
+    _new_ws_cache()
+
+    cute_workspace_buffer = _alloc_workspace_buf(_BuffTag.fmha_sm100_cutlass_workspace, 32 * 1024 * 1024, device, torch.uint8)
+
+    cuda_stream = stream
+
+    num_ctas = _get_num_cta(device)
+    if usable_SM_count > 0:
+        num_ctas = min(usable_SM_count, num_ctas)
+
+    orig_num_qo_heads = num_qo_heads
+    pack_factor = _compute_pack_factor(max_qo_len_orig, num_qo_heads, num_kv_heads)
+    qo_len_uniform = len(qo_lens) > 0 and min(qo_lens) == max_qo_len_orig
+    if pack_factor > 1:
+        num_qo_heads = num_qo_heads // pack_factor
+
+    kv_lens = kv_segment_lens.tolist()
+    kv_page_indptr_list = None
+    if kv_block_num > 0 and page_size > 0:
+        total_q = sum(qo_lens)
+        total_q_packed = total_q * pack_factor if pack_factor > 1 else total_q
+        assert total_q_packed * num_qo_heads <= 65536
+        qo_offset_in = qo_offset.tolist() if qo_offset is not None else None
+        qo_lens, kv_lens, qo_offset, kv_page_indptr_list = \
+            _expand_for_per_token_sparse(qo_lens, kv_lens, qo_offset_in, page_size, pack_factor)
+    elif kv_block_num > 0 and page_size <= 0:
+        print("[Error] Sparse mode must be used together with paged kv!")
+    else:
+        if pack_factor > 1:
+            qo_lens = [q * pack_factor for q in qo_lens]
+        if page_size > 0:
+            acc = 0
+            kv_page_indptr_list = [0]
+            for k in kv_lens:
+                acc += (k + page_size - 1) // page_size
+                kv_page_indptr_list.append(acc)
+
+    acc = 0
+    qo_offsets = [0]
+    for q in qo_lens:
+        acc += q
+        qo_offsets.append(acc)
+    acc = 0
+    kv_offsets = [0]
+    for k in kv_lens:
+        acc += k
+        kv_offsets.append(acc)
+
+    max_kv_len = max(kv_lens)
+    qo_offset_list = qo_offset if isinstance(qo_offset, list) else qo_offset.tolist()
+    if not causal:
+        qo_offset_list = [max_kv_len] * len(kv_lens)
+
+    qo_segment_offsets = _plan_buf_from_list(qo_offsets, device)
+    kv_segment_offsets = _plan_buf_from_list(kv_offsets, device)
+    qo_offset = _plan_buf_from_list(qo_offset_list, device)
+    kv_segment_lens = _plan_buf_from_list(kv_lens, device)
+    kv_page_indptr = _plan_buf_from_list(kv_page_indptr_list, device) if kv_page_indptr_list is not None else None
+
+    plan_kv_lens_list = kv_lens
+    plan_qo_offset = qo_offset
+    if kv_block_num > 0 and page_size > 0:
+        plan_kv_lens_list = [kv_block_num * page_size] * len(kv_lens)
+        plan_qo_offset = None
+
+    max_qo_len = max(qo_lens)
+    qo_tile_size = 128 if max_qo_len <= 128 else 256
+    kv_tile_size = 256 if qo_tile_size == 128 else 128
+
+    total_qo_len = qo_offsets[-1]
+
+    max_k_tiles = math.ceil(math.ceil(max_kv_len / 128) / 128) * 128 if output_maxscore else -1
+    maxscore_elems = num_qo_heads * max_k_tiles * total_qo_len
+    if output_maxscore and maxscore_elems > (1 << 31):
+        print(f"Too huge setting to output maxscore!")
+        max_k_tiles = -1
+
+    if num_kv_splits < 1 and qo_tile_size == 128:
+        group_iters = []
+        batch_size = len(qo_lens)
+        for b_idx in range(batch_size):
+            ql_b, kl_b = qo_lens[b_idx], plan_kv_lens_list[b_idx]
+            off_q = kl_b - ql_b
+            for t in range(math.ceil(ql_b / qo_tile_size)):
+                packed_q_end = (t + 1) * qo_tile_size
+                q_end = (packed_q_end - 1) // pack_factor + 1 if pack_factor > 1 else packed_q_end
+                if causal and q_end + off_q <= 0:
+                    continue
+                eff_kv = min(q_end + off_q, kl_b) if causal else kl_b
+                group_iters.append(math.ceil(max(eff_kv, 0) / kv_tile_size))
+
+        if not group_iters:
+            num_kv_splits = 1
+        elif len(group_iters) * num_qo_heads > 4096:
+            # Too many tiles for split-KV smem — fall back to nosplit greedy
+            num_kv_splits = 1
+        else:
+            total_iters = sum(group_iters) * num_qo_heads
+            avg_iters = max(2, (total_iters + num_ctas - 1) // num_ctas + 3)
+            chunk_size = avg_iters
+            max_pieces = max(math.ceil(g / chunk_size) for g in group_iters)
+            max_kv_splits = min(2 * max(max_pieces, 1), 64)
+
+            max_work_items = 131072 * max_kv_splits
+            
+            packed_work_range = _alloc_perplan_buf(_BuffTag.packed_work_range, num_ctas, device, torch.int64)
+            packed_work_info = _alloc_perplan_buf(_BuffTag.packed_work_info, max_work_items, device, torch.int64)
+            kv_tile_begin_indices = _alloc_perplan_buf(_BuffTag.kv_tile_begin_indices, max_work_items, device, torch.int32)
+            kv_tile_end_indices = _alloc_perplan_buf(_BuffTag.kv_tile_end_indices, max_work_items, device, torch.int32)
+            kv_split_indices = _alloc_perplan_buf(_BuffTag.kv_split_indices, max_work_items, device, torch.int32)
+            num_kv_splits_per_row = _alloc_perplan_buf(_BuffTag.num_kv_splits_per_row, total_qo_len, device, torch.int32)
+            plan_cost = _alloc_workspace_buf(_BuffTag.plan_cost, 2, device, dtype=torch.float32)
+
+            lse_total_size = max_kv_splits * total_qo_len * num_qo_heads
+            workspace_lse = _alloc_perplan_buf(_BuffTag.workspace_lse, lse_total_size, device, torch.float32)
+
+            qo_segment_lens_gpu = _plan_buf_from_list(qo_lens, device)
+            plan_kv_lens_gpu = _plan_buf_from_list(plan_kv_lens_list, device)
+            _call_plan(qo_segment_offsets,
+                qo_segment_lens_gpu, plan_kv_lens_gpu,
+                packed_work_range, packed_work_info,
+                qo_tile_size, kv_tile_size,
+                num_qo_heads, num_ctas, causal, plan_qo_offset,
+                -max_kv_splits,
+                kv_tile_begin_indices, kv_tile_end_indices, kv_split_indices,
+                chunk_size, plan_cost, num_kv_splits_per_row, workspace_lse, lse_total_size,
+                pack_factor, cuda_stream)
+
+            _cost = plan_cost.tolist()
+            do_split = _cost[0] > 0
+            predicted_speedup = _cost[1]
+
+            if do_split:
+                workspace_o = _alloc_workspace_buf(_BuffTag.workspace_o, total_qo_len * max_kv_splits * num_qo_heads * 128, device, dtype=torch.bfloat16)
+            else:
+                kv_tile_begin_indices = None
+                kv_tile_end_indices = None
+                kv_split_indices = None
+                num_kv_splits_per_row = None
+                workspace_o = None
+                workspace_lse = None
+                max_kv_splits = 1
+
+            return _make_plan_info(
+                packed_work_range=packed_work_range, packed_work_info=packed_work_info,
+                kv_tile_begin_indices=kv_tile_begin_indices, kv_tile_end_indices=kv_tile_end_indices, 
+                kv_split_indices=kv_split_indices, num_kv_splits=max_kv_splits, workspace_o=workspace_o, 
+                workspace_lse=workspace_lse, max_qo_len=max_qo_len, predicted_speedup=predicted_speedup, 
+                num_kv_splits_per_row=num_kv_splits_per_row, qo_segment_offsets=qo_segment_offsets, 
+                kv_segment_offsets=kv_segment_offsets, kv_page_indptr=kv_page_indptr, max_k_tiles=max_k_tiles,
+                qo_segment_lens=qo_segment_lens_gpu, kv_segment_lens=kv_segment_lens, qo_offset=qo_offset,
+                pack_factor=pack_factor, orig_num_qo_heads=orig_num_qo_heads,
+                qo_len_uniform=qo_len_uniform, cute_workspace_buffer=cute_workspace_buffer,
+                score_reduce=score_reduce)
+
+        num_kv_splits = 1
+    elif num_kv_splits < 1:
+        num_kv_splits = 1
+    elif qo_tile_size == 256:
+        num_kv_splits = 1
+
+    packed_work_range = _alloc_perplan_buf(_BuffTag.packed_work_range, num_ctas, device, torch.int64)
+    max_work_items = 131072 * max(num_kv_splits, 1)
+    packed_work_info = _alloc_perplan_buf(_BuffTag.packed_work_info, max_work_items, device, torch.int64)
+    if num_kv_splits > 1:
+        kv_tile_begin_indices = _alloc_perplan_buf(_BuffTag.kv_tile_begin_indices, max_work_items, device, torch.int32)
+        kv_tile_end_indices = _alloc_perplan_buf(_BuffTag.kv_tile_end_indices, max_work_items, device, torch.int32)
+        kv_split_indices = _alloc_perplan_buf(_BuffTag.kv_split_indices, max_work_items, device, torch.int32)
+        num_kv_splits_per_row = _alloc_perplan_buf(_BuffTag.num_kv_splits_per_row, total_qo_len, device, torch.int32)
+        workspace_o = _alloc_workspace_buf(_BuffTag.workspace_o, total_qo_len * num_kv_splits * num_qo_heads * 128, device, dtype=torch.bfloat16)
+
+        lse_total_size = num_kv_splits * total_qo_len * num_qo_heads
+        workspace_lse = _alloc_perplan_buf(_BuffTag.workspace_lse, lse_total_size, device, torch.float32)
+    else:
+        kv_tile_begin_indices = None
+        kv_tile_end_indices = None
+        kv_split_indices = None
+        num_kv_splits_per_row = None
+        workspace_o = None
+        
+        lse_total_size = 0
+        workspace_lse = None
+
+    qo_segment_lens_gpu = _plan_buf_from_list(qo_lens, device)
+    plan_kv_lens_gpu = _plan_buf_from_list(plan_kv_lens_list, device)
+    _call_plan(qo_segment_offsets, qo_segment_lens_gpu, plan_kv_lens_gpu,
+        packed_work_range, packed_work_info,
+        qo_tile_size, kv_tile_size,
+        num_qo_heads, num_ctas, causal, plan_qo_offset,
+        num_kv_splits,
+        kv_tile_begin_indices, kv_tile_end_indices, kv_split_indices,
+        0, None, num_kv_splits_per_row, workspace_lse, lse_total_size,
+        pack_factor, cuda_stream)
+
+    return _make_plan_info(
+        packed_work_range=packed_work_range, packed_work_info=packed_work_info,
+        kv_tile_begin_indices=kv_tile_begin_indices, kv_tile_end_indices=kv_tile_end_indices,
+        kv_split_indices=kv_split_indices, num_kv_splits=num_kv_splits, workspace_o=workspace_o,
+        workspace_lse=workspace_lse, max_qo_len=max_qo_len, predicted_speedup=1.0,
+        num_kv_splits_per_row=num_kv_splits_per_row, qo_segment_offsets=qo_segment_offsets,
+        kv_segment_offsets=kv_segment_offsets, kv_page_indptr=kv_page_indptr, max_k_tiles=max_k_tiles,
+        qo_segment_lens=qo_segment_lens_gpu, kv_segment_lens=kv_segment_lens, qo_offset=qo_offset,
+        pack_factor=pack_factor, orig_num_qo_heads=orig_num_qo_heads,
+        qo_len_uniform=qo_len_uniform, cute_workspace_buffer=cute_workspace_buffer,
+        score_reduce=score_reduce)
+
+
+
+def _fmha_sm100(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    plan_info,
+    kv_indices: Optional[torch.Tensor] = None,
+    kv_block_indexes: Optional[torch.Tensor] = None,
+    q_offset_override: Optional[Union[int, torch.Tensor]] = None,
+    out: Optional[torch.Tensor] = None,
+    max_score: Optional[torch.Tensor] = None,
+    sm_scale: Optional[float] = None,
+    q_scale: Optional[float] = None,
+    k_scale: Optional[float] = None,
+    v_scale: Optional[float] = None,
+    o_scale: Optional[float] = None,
+    output_maxscore: bool = True,
+    output_o: bool = True,
+    check_input_valid: bool = False,
+    score_local_top16: bool = False,
+    score_local_top16_int32: bool = False,
+    score_local_top16_partition2048: bool = False,
+    score_local_top16_partition4096: bool = False,
+    score_local_top16_partition8192: bool = False,
+    score_early_s_release: bool = False,
+    score_eight_way_reduction: bool = False,
+    score_rolling_reduction: bool = False,
+    score_rolling_prefetch3: bool = False,
+    score_tmem_load_reduce: bool = False,
+    score_tmem_load_reduce_x64: bool = False,
+    score_single_correction_warp: bool = False,
+    score_onlyscore_no_o_barrier: bool = False,
+    score_early_c_commit: bool = False,
+    score_k_block_scale: Optional[torch.Tensor] = None,
+    score_scale_policy: str = "bf16",
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+
+    if plan_info["MM-SA-Nv"]:
+        return sparse_fmha(q=q, k=k, v=v, plan_info=plan_info, out=out, max_score=max_score, 
+                sm_scale=sm_scale, q_scale=q_scale, k_scale=k_scale, v_scale=v_scale, o_scale=o_scale,
+                kv_indices=kv_indices, output_maxscore=output_maxscore, output_o=output_o, q_offset_override=q_offset_override,
+                kv_block_indexes=kv_block_indexes, check_input_valid=check_input_valid)
+
+
+    nnz_qo, num_qo_heads, head_dim_qk = q.shape
+    if kv_indices is None:
+        nnz_kv, num_kv_heads, head_dim_vo = v.shape
+        is_paged = False
+    else:
+        nnz_kv, num_kv_heads, page_size, head_dim_vo = v.shape
+        is_paged = True
+
+    qo_total_len = nnz_qo
+
+    packed_work_range = plan_info["packed_work_range"]
+    packed_work_info = plan_info["packed_work_info"]
+    kv_tile_begin_indices = plan_info["kv_tile_begin_indices"]
+    kv_tile_end_indices = plan_info["kv_tile_end_indices"]
+    kv_split_indices = plan_info["kv_split_indices"]
+    num_kv_splits = plan_info["num_kv_splits"]
+    workspace_o = plan_info["workspace_o"]
+    workspace_lse = plan_info["workspace_lse"]
+    plan_max_qo_len = plan_info["max_qo_len"]
+    num_kv_splits_per_row = plan_info["num_kv_splits_per_row"]
+    qo_segment_offsets = plan_info["qo_segment_offsets"]
+    kv_segment_offsets = plan_info["kv_segment_offsets"]
+    kv_page_indptr = plan_info["kv_page_indptr"]
+    max_k_tiles = plan_info["max_k_tiles"]
+    qo_segment_lens = plan_info["qo_segment_lens"]
+    kv_segment_lens = plan_info["kv_segment_lens"]
+    qo_offset = plan_info["qo_offset"] if q_offset_override is None else q_offset_override
+    pack_factor = plan_info["pack_factor"]
+    orig_num_qo_heads = plan_info["orig_num_qo_heads"]
+    qo_len_uniform = plan_info["qo_len_uniform"]
+    workspace_buffer = plan_info["cute_workspace_buffer"]
+
+    batch_size = qo_segment_lens.shape[0]
+
+    if isinstance(qo_offset, int):
+        qo_offset = torch.full_like(qo_segment_lens, qo_offset)
+    elif qo_offset is not None:
+        assert qo_offset.device == qo_segment_lens.device
+
+    if check_input_valid:
+        _validate_fmha_inputs(
+            q, k, v, qo_segment_lens, kv_segment_lens,
+            num_qo_heads, num_kv_heads, head_dim_qk, head_dim_vo,
+            batch_size, qo_total_len, is_paged,
+            kv_indices, kv_block_indexes, qo_offset,
+            page_size if is_paged else 0,
+            pack_factor=pack_factor,
+            packed_work_range=packed_work_range,
+            packed_work_info=packed_work_info,
+            num_kv_splits=num_kv_splits,
+            kv_tile_begin_indices=kv_tile_begin_indices,
+            kv_tile_end_indices=kv_tile_end_indices,
+            kv_split_indices=kv_split_indices,
+            qo_segment_offsets=qo_segment_offsets,
+            kv_page_indptr=kv_page_indptr,
+        )
+
+    if pack_factor > 1 and orig_num_qo_heads is not None:
+        num_qo_heads = orig_num_qo_heads // pack_factor
+        qo_total_len = nnz_qo * pack_factor
+
+    max_qo_len = plan_max_qo_len
+    qo_tile_size = 128 if max_qo_len <= 128 else 256
+
+    if sm_scale is None:
+        sm_scale = 1.0 / math.sqrt(head_dim_qk)
+    if q_scale is None:
+        q_scale = 1.0
+    if k_scale is None:
+        k_scale = 1.0
+    if v_scale is None:
+        v_scale = 1.0
+    if o_scale is None:
+        o_scale = 1.0
+
+    assert output_o or output_maxscore
+
+    use_split_kv = (num_kv_splits > 1 and workspace_o is not None)
+
+    if not output_maxscore or max_k_tiles == -1:
+        max_score = None
+        output_o = True
+    elif max_score is None and max_k_tiles > 0:
+        max_score = torch.full(
+            (orig_num_qo_heads, max_k_tiles, nnz_qo),
+            -float("inf"), dtype=torch.float32, device=q.device)
+
+    if not output_o:
+        out = None
+    elif out is None:
+        out_dtype = torch.bfloat16 if q.dtype.itemsize == 1 else q.dtype
+        out = torch.empty(
+            nnz_qo,
+            orig_num_qo_heads, head_dim_vo,
+            device=q.device, dtype=out_dtype,
+        )
+
+    # Determine variant dispatch parameters
+    dtype_code = _dlpack_dtype_code(q.dtype)
+
+    kv_block_indexes_ptr_exists = kv_block_indexes is not None
+    max_score_exists = max_score is not None
+    o_exists = out is not None
+    if kv_block_indexes_ptr_exists:
+        sparse_mode = 0
+    elif max_score_exists and o_exists:
+        sparse_mode = 1
+    elif max_score_exists:
+        sparse_mode = 2
+    else:
+        sparse_mode = 3
+
+    variant_page_size = (k.shape[2] if is_paged else -1)
+    legal_scale_policies = {
+        "bf16", "raw_e4m3", "per_tensor_e4m3", "per_block_e4m3"
+    }
+    if score_scale_policy not in legal_scale_policies:
+        raise ValueError(f"unsupported Score scale policy: {score_scale_policy}")
+    if q.dtype == torch.bfloat16 and score_scale_policy != "bf16":
+        raise ValueError("BF16 Score requires the bf16 scale policy")
+    if q.dtype == torch.float8_e4m3fn and score_scale_policy == "bf16":
+        raise ValueError("FP8 Score requires an explicit E4M3 scale policy")
+    if (score_k_block_scale is not None) != (
+        score_scale_policy == "per_block_e4m3"
+    ):
+        raise ValueError("per-block scale tensor and scale policy must agree")
+    if score_k_block_scale is not None:
+        if q.dtype != torch.float8_e4m3fn:
+            raise ValueError("score_k_block_scale requires FP8 E4M3 Indexer Q/K")
+        if not score_local_top16_int32:
+            raise ValueError("score_k_block_scale requires int32 local Top-16")
+        if (
+            score_k_block_scale.device != q.device
+            or score_k_block_scale.dtype != torch.float32
+            or not score_k_block_scale.is_contiguous()
+            or score_k_block_scale.ndim != 1
+            or score_k_block_scale.numel() < max_k_tiles
+        ):
+            raise ValueError(
+                "score_k_block_scale must be contiguous CUDA FP32 [>=max_k_tiles]"
+            )
+
+    # Fixed at plan time; only OnlyScore variants can be built with a
+    # non-default value (see _FMHA_SM100_IMPOSSIBLE in jit.py).
+    score_reduce_code = 1 if plan_info.get("score_reduce", "max") == "sum" else 0
+
+    variant_module = get_fmha_variant(
+        dtype_code, qo_tile_size, (max_qo_len <= 64),
+        sparse_mode, variant_page_size, use_split_kv, pack_factor,
+        score_reduce_code, score_local_top16, score_local_top16_int32,
+        score_local_top16_partition2048, score_local_top16_partition4096,
+        score_local_top16_partition8192, score_early_s_release,
+        score_eight_way_reduction, score_rolling_reduction,
+        score_rolling_prefetch3, score_tmem_load_reduce,
+        score_tmem_load_reduce_x64, score_single_correction_warp,
+        score_onlyscore_no_o_barrier, score_early_c_commit,
+        score_k_block_scale is not None, score_scale_policy)
+
+    run_args = (
+        workspace_buffer,
+        q, k, v,
+        qo_segment_lens, kv_segment_lens,
+        qo_segment_offsets, kv_segment_offsets,
+        packed_work_range, packed_work_info,
+        out,
+        sm_scale, q_scale, k_scale, v_scale, o_scale,
+        max_qo_len,
+        qo_offset,
+        num_kv_splits,
+        kv_tile_begin_indices, kv_tile_end_indices, kv_split_indices,
+        workspace_o, workspace_lse,
+        num_kv_splits_per_row,
+        qo_tile_size,
+        kv_indices, kv_page_indptr,
+        max_score,
+        max_k_tiles,
+        kv_block_indexes,
+        pack_factor,
+        bool(qo_len_uniform),
+    )
+    if score_k_block_scale is not None:
+        variant_module.run(
+            *run_args,
+            score_k_block_scale,
+            torch.cuda.current_stream().cuda_stream,
+        )
+    else:
+        variant_module.run(
+            *run_args,
+            torch.cuda.current_stream().cuda_stream,
+        )
+
+    # Split-KV reduction
+    if use_split_kv and out is not None:
+        log2_e = math.log2(math.exp(1.0))
+        scale_softmax_log2 = float(q_scale * k_scale * sm_scale) * log2_e
+        inv_scale_o = float(o_scale)
+
+        reduction_module = get_reduction_module()
+        reduction_module.reduction(
+            workspace_o,
+            out,
+            workspace_lse,
+            num_kv_splits_per_row,
+            scale_softmax_log2, inv_scale_o,
+            num_kv_splits, qo_total_len, num_qo_heads, head_dim_vo,
+            num_qo_heads * head_dim_vo, head_dim_vo,
+            num_qo_heads * head_dim_vo, head_dim_vo,
+            orig_num_qo_heads,
+            num_kv_heads,
+            pack_factor,
+            torch.cuda.current_stream().cuda_stream,
+        )
+
+    return out, max_score
+
+
+def fmha_sm100_plan(
+    qo_segment_lens: torch.Tensor,
+    kv_segment_lens: torch.Tensor,
+    *args,
+    qo_offset: Optional[Union[int, torch.Tensor]] = None,
+    split_prefill_decode = True,
+    **kwargs
+):
+    """Build a reusable execution plan for ``fmha_sm100``.
+
+    The plan is shape-dependent and can be reused across layers or repeated
+    calls that share the same sequence lengths, head counts, page size, sparse
+    mode, and output mode.  Planning may run CUDA kernels and allocates
+    workspaces, so it should be done outside tight per-layer loops when
+    possible.
+
+    Parameters
+    ----------
+    qo_segment_lens : torch.Tensor
+        Shape ``[batch_size]``, dtype int32/int64.  Per-request Q/O lengths.
+        CPU tensors are accepted for the dense planner; sparse prefill planning
+        moves them to CUDA internally.
+    kv_segment_lens : torch.Tensor
+        Shape ``[batch_size]``, dtype int32/int64.  Per-request KV lengths.
+    *args
+        Positional arguments forwarded to the internal planner.  In normal
+        usage this is ``num_qo_heads`` and optionally ``num_kv_heads``.
+    qo_offset : int or torch.Tensor, optional
+        Per-request causal offset.  If omitted, defaults to
+        ``kv_segment_lens - qo_segment_lens`` for bottom-right causal masking.
+        A tensor must have shape ``[batch_size]``.
+    split_prefill_decode : bool, optional
+        If True, a mixed batch ordered as decode requests followed by prefill
+        requests is split into two sub-plans.  The original order must already
+        group short decode sequences before long prefill sequences.
+    **kwargs
+        Planner options forwarded to ``_fmha_sm100_plan``.  Common options are
+        ``num_kv_heads``, ``num_kv_splits``, ``page_size``,
+        ``output_maxscore``, ``kv_block_num``, ``usable_SM_count``, ``causal``,
+        ``sparse_kernel_mode``, ``use_fp8_kvcache``, ``device``, and ``stream``.
+
+    Returns
+    -------
+    tuple
+        ``(has_mixed_prefill, split, batch_size, decode_plan, prefill_plan)``.
+        Pass this tuple unchanged as ``plan_info`` to ``fmha_sm100``.
+    """
+
+    # assert qo_segment_lens.device.type == 'cpu' \
+    #         and kv_segment_lens.device.type == 'cpu'
+    # assert qo_offset is None or isinstance(qo_offset, int) or qo_offset.device.type == 'cpu'
+
+    if qo_offset is None:
+        qo_offset = kv_segment_lens - qo_segment_lens
+    elif isinstance(qo_offset, int):
+        qo_offset = torch.full_like(qo_segment_lens, qo_offset)
+    
+    batch_size = qo_segment_lens.shape[0]
+    has_mixed_prefill = False
+    qmax = qo_segment_lens.max().item()
+    sparse = kwargs.get("kv_block_num", -1) > 0
+    split_threshold = _prefill_qlen_threshold(sparse)
+    if split_prefill_decode and qmax > split_threshold:
+        split = (qo_segment_lens > split_threshold).nonzero(as_tuple=False)[0, 0].item()
+        has_mixed_prefill = split > 0
+    if has_mixed_prefill:
+        # print(f"Split into 2 parts at index {split}")
+        decode_qo_segment_lens = qo_segment_lens[:split]
+        decode_kv_segment_lens = kv_segment_lens[:split]
+        decode_qo_offset = qo_offset[:split]
+        decode = _fmha_sm100_plan(decode_qo_segment_lens, decode_kv_segment_lens, *args,
+                                    qo_offset=decode_qo_offset, **kwargs)
+        decode = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in decode.items()}
+        # fmha_sm100() re-derives these three scalars from plan tensors via
+        # .item() on every call, but this plan is built once per step and
+        # shared by every layer (see compass_msa_indexer.build_plan). Each
+        # .item() is a host sync, so paying it once here instead of once per
+        # layer turns 45 syncs a step into 1 -- and since CUDA execution is
+        # queued, a sync anywhere blocks on the whole backlog ahead of it, not
+        # just the small compute needed for the scalar itself.
+        decode_pack = decode.get("pack_factor", 1)
+        decode["_decode_nnz"] = decode["qo_segment_offsets"][-1].item() // decode_pack
+        # The plan dict carries both the paged and dense keys unconditionally,
+        # with whichever mode was not used set to None -- "in decode" is true
+        # either way, so the presence check has to be on the value.
+        if decode.get("kv_page_indptr") is not None:
+            decode["_kv_page_split"] = decode["kv_page_indptr"][-1].item()
+        elif decode.get("kv_segment_offsets") is not None:
+            decode["_decode_kv_nnz"] = decode["kv_segment_offsets"][-1].item()
+        elif decode.get("cu_seqlens_k") is not None:
+            decode["_decode_kv_nnz"] = decode["cu_seqlens_k"][-1].item()
+        prefill_qo_segment_lens = qo_segment_lens[split:]
+        prefill_kv_segment_lens = kv_segment_lens[split:]
+        prefill_qo_offset = qo_offset[split:]
+        prefill = _fmha_sm100_plan(prefill_qo_segment_lens, prefill_kv_segment_lens, *args,
+                                    qo_offset=prefill_qo_offset, **kwargs)
+        return (True, split, batch_size, decode, prefill)
+    else:
+        plan = _fmha_sm100_plan(qo_segment_lens, kv_segment_lens, *args, 
+                                    qo_offset=qo_offset, **kwargs)
+        return (False, 0, batch_size, plan, None)
+
+
+def fmha_sm100_refresh_plan(
+    plan_info,
+    qo_segment_lens: torch.Tensor,
+    kv_segment_lens: torch.Tensor,
+    *,
+    qo_offset: torch.Tensor,
+) -> None:
+    """Refresh a non-split plan's dynamic metadata on the GPU.
+
+    This is the plan/run half required by CUDA graph users.  The normal planner
+    constructs Python lists and allocates descriptor tensors, neither of which
+    is valid while a graph is being captured.  A graph owner builds one
+    no-split plan before capture, keeps its descriptor tensors alive, then
+    updates their contents and work lists with this function before every
+    replay.
+
+    Args:
+        plan_info: Plan tuple returned by :func:`fmha_sm100_plan` with a single
+            no-split plan.
+        qo_segment_lens: Per-sequence query lengths on CUDA.
+        kv_segment_lens: Per-sequence KV lengths on CUDA.
+        qo_offset: Per-sequence causal offsets on CUDA.
+    """
+    has_mixed_prefill, _, batch_size, plan, prefill = plan_info
+    if has_mixed_prefill or prefill is not None:
+        raise ValueError("CUDA graph plan refresh requires one no-split plan")
+    if plan.get("MM-SA-Nv", False):
+        raise ValueError("CUDA graph plan refresh does not support Nv-prefill")
+    inputs = (qo_segment_lens, kv_segment_lens, qo_offset)
+    if any(t.device != plan["qo_segment_offsets"].device for t in inputs):
+        raise ValueError("plan metadata and refresh tensors must share a device")
+    if any(t.dtype != torch.int32 or t.ndim != 1 for t in inputs):
+        raise TypeError("refresh tensors must be rank-1 CUDA int32 tensors")
+    if any(t.numel() != batch_size for t in inputs):
+        raise ValueError("refresh tensor shape must match the graph plan batch")
+    if plan["num_kv_splits"] != 1:
+        raise ValueError("CUDA graph plan refresh requires num_kv_splits=1")
+
+    qo_offsets = plan["qo_segment_offsets"]
+    kv_offsets = plan["kv_segment_offsets"]
+    qo_offsets[0].zero_()
+    kv_offsets[0].zero_()
+    torch.cumsum(qo_segment_lens, dim=0, out=qo_offsets[1:])
+    torch.cumsum(kv_segment_lens, dim=0, out=kv_offsets[1:])
+    plan["qo_segment_lens"].copy_(qo_segment_lens)
+    plan["kv_segment_lens"].copy_(kv_segment_lens)
+    plan["qo_offset"].copy_(qo_offset)
+    if plan["kv_page_indptr"] is not None:
+        page_counts = torch.div(
+            kv_segment_lens + 127, 128, rounding_mode="floor"
+        )
+        page_indptr = plan["kv_page_indptr"]
+        page_indptr[0].zero_()
+        torch.cumsum(page_counts, dim=0, out=page_indptr[1:])
+
+    pack_factor = plan["pack_factor"]
+    num_qo_heads = plan["orig_num_qo_heads"] // pack_factor
+    qo_tile_size = 128 if plan["max_qo_len"] <= 128 else 256
+    kv_tile_size = 256 if qo_tile_size == 128 else 128
+    _call_plan(
+        qo_offsets,
+        plan["qo_segment_lens"],
+        plan["kv_segment_lens"],
+        plan["packed_work_range"],
+        plan["packed_work_info"],
+        qo_tile_size,
+        kv_tile_size,
+        num_qo_heads,
+        _get_num_cta(qo_offsets.device),
+        True,
+        plan["qo_offset"],
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+        None,
+        0,
+        pack_factor,
+    )
+
+def fmha_sm100(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    plan_info,
+    kv_indices: Optional[torch.Tensor] = None,
+    kv_block_indexes: Optional[torch.Tensor] = None,
+    q_offset_override: Optional[Union[int, torch.Tensor]] = None,
+    out: Optional[torch.Tensor] = None,
+    max_score: Optional[torch.Tensor] = None,
+    **kwargs
+) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """Run dense, paged, or sparse SM100 FMHA using a precomputed plan.
+
+    Parameters
+    ----------
+    q : torch.Tensor
+        Shape ``[total_qo_len, num_qo_heads, head_dim]``.  Supported dtypes are
+        ``torch.bfloat16`` and ``torch.float8_e4m3fn``.  ``head_dim`` must be
+        128.
+    k : torch.Tensor
+        Dense layout ``[total_kv_len, num_kv_heads, head_dim]`` or paged layout
+        ``[total_pages, num_kv_heads, page_size, head_dim]``.
+    v : torch.Tensor
+        Same layout as ``k``.  The output head dimension follows ``v.shape[-1]``.
+    plan_info : tuple
+        Return value from ``fmha_sm100_plan`` for the same lengths, head layout,
+        page size, and sparse/output mode.
+    kv_indices : torch.Tensor, optional
+        Paged-KV physical page table, flattened across the batch.  Required when
+        ``k`` and ``v`` use paged layout.  Shape is ``[sum_pages]`` and dtype is
+        int32.
+    kv_block_indexes : torch.Tensor, optional
+        Sparse KV block indices from ``sparse_topk_select``.  Shape
+        ``[total_qo_len, num_kv_heads or num_qo_heads, kv_block_num]``, dtype
+        int32, ascending per row with ``-1`` padding at the tail.
+    q_offset_override : int or torch.Tensor, optional
+        Runtime causal-offset override.  Tensor form must have shape
+        ``[batch_size]`` on the same CUDA device as the plan metadata.  The
+        override must stay within the causal range visible to the original
+        plan.
+    out : torch.Tensor, optional
+        Preallocated output buffer with shape
+        ``[total_qo_len, num_qo_heads, head_dim_v]``.
+    max_score : torch.Tensor, optional
+        Preallocated per-KV-tile score buffer with shape
+        ``[num_qo_heads, max_k_tiles, total_qo_len]`` and dtype float32.
+    **kwargs
+        Runtime options forwarded to the kernel runner.  Common options are
+        ``sm_scale``, ``q_scale``, ``k_scale``, ``v_scale``, ``o_scale``,
+        ``output_maxscore``, ``output_o``, and ``check_input_valid``.
+
+    Returns
+    -------
+    tuple[torch.Tensor | None, torch.Tensor | None]
+        ``(out, max_score)``.  Either item may be ``None`` if the corresponding
+        output was disabled.  When both decode and prefill sub-plans are used,
+        outputs are concatenated back into the original batch order.
+    """
+    has_mixed_prefill, split, batch_size, decode, prefill = plan_info
+    if not has_mixed_prefill:
+        return _fmha_sm100(q, k, v, decode, out=out, max_score=max_score, kv_indices=kv_indices,kv_block_indexes=kv_block_indexes, q_offset_override=q_offset_override, **kwargs)
+    else:
+
+        if "_decode_nnz" in decode:
+            decode_nnz = decode["_decode_nnz"]
+        else:
+            decode_pack = decode.get("pack_factor", 1)
+            decode_nnz = decode["qo_segment_offsets"][-1].item() // decode_pack
+        is_paged = kv_indices is not None
+        nnz_qo = q.shape[0]
+        num_qo_heads = q.shape[1]
+
+        q_decode = q[:decode_nnz]
+        q_prefill = q[decode_nnz:]
+
+        if is_paged:
+            k_decode, v_decode = k, v
+            k_prefill, v_prefill = k, v
+            if "_kv_page_split" in decode:
+                kv_page_split = decode["_kv_page_split"]
+            elif decode.get("kv_page_indptr") is not None:
+                kv_page_split = decode["kv_page_indptr"][-1].item()
+            else:
+                kv_page_split = decode["total_rows"]
+            decode_kv_indices = kv_indices[:kv_page_split]
+            prefill_kv_indices = kv_indices[kv_page_split:]
+        else:
+            if "_decode_kv_nnz" in decode:
+                decode_kv_nnz = decode["_decode_kv_nnz"]
+            elif decode.get("kv_segment_offsets") is not None:
+                decode_kv_nnz = decode["kv_segment_offsets"][-1].item()
+            else:
+                decode_kv_nnz = decode["cu_seqlens_k"][-1].item()
+            k_decode, k_prefill = k[:decode_kv_nnz], k[decode_kv_nnz:]
+            v_decode, v_prefill = v[:decode_kv_nnz], v[decode_kv_nnz:]
+            decode_kv_indices = None
+            prefill_kv_indices = None
+
+        decode_block_idx = kv_block_indexes[:decode_nnz] if kv_block_indexes is not None else None
+        prefill_block_idx = kv_block_indexes[decode_nnz:] if kv_block_indexes is not None else None
+        if isinstance(q_offset_override, int):
+            decode_qo_offset = torch.full((split,), q_offset_override, dtype=torch.int32, device=q.device)
+            prefill_qo_offset = torch.full((batch_size - split,), q_offset_override, dtype=torch.int32, device=q.device)
+        elif q_offset_override is not None:
+            decode_qo_offset = q_offset_override[:split]
+            prefill_qo_offset = q_offset_override[split:]
+        else:
+            decode_qo_offset = None
+            prefill_qo_offset = None
+
+        # ---- Run kernels ----
+        decode_out, decode_ms = _fmha_sm100(
+            q_decode, k_decode, v_decode, decode,
+            out=None, max_score=None,
+            kv_indices=decode_kv_indices, kv_block_indexes=decode_block_idx,
+            q_offset_override=decode_qo_offset,
+            **kwargs)
+        prefill_out, prefill_ms = _fmha_sm100(
+            q_prefill, k_prefill, v_prefill, prefill,
+            out=None, max_score=None,
+            kv_indices=prefill_kv_indices, kv_block_indexes=prefill_block_idx,
+            q_offset_override=prefill_qo_offset,
+            **kwargs)
+
+        # ---- Merge out ----
+        if decode_out is not None and prefill_out is not None:
+            combined_out = torch.cat([decode_out, prefill_out], dim=0)
+        else:
+            combined_out = None
+        
+        if out is not None and combined_out is not None:
+            out.copy_(combined_out)
+
+        # ---- Merge max_score ----
+        if decode_ms is not None and prefill_ms is not None:
+            d_kt, p_kt = decode_ms.shape[1], prefill_ms.shape[1]
+            max_kt = max(d_kt, p_kt)
+            combined_ms = torch.full(
+                (num_qo_heads, max_kt, nnz_qo),
+                -float("inf"), dtype=torch.float32, device=q.device)
+            combined_ms[:, :d_kt, :decode_nnz] = decode_ms
+            combined_ms[:, :p_kt, decode_nnz:] = prefill_ms
+        else:
+            combined_ms = decode_ms if decode_ms is not None else prefill_ms
+
+        if max_score is not None and combined_ms is not None:
+            max_score.copy_(combined_ms)
+
+        return (out if out is not None else combined_out,
+                max_score if max_score is not None else combined_ms)
+
+
+# ============================================================================
+# Sparse TopK Select
+# ============================================================================
+
+
+def sparse_topk_select(
+    max_score: torch.Tensor,
+    topk: int,
+    num_valid_pages: Optional[int] = None,
+    output: Optional[torch.Tensor] = None,
+    force_begin_blocks: int = 0,
+    force_end_blocks: int = 0,
+    per_query_valid: Optional[torch.Tensor] = None,
+    prescale: float = 1.0,
+    group_size: int = 1,
+    group_reduce: str = "max",
+) -> torch.Tensor:
+    r"""Select top-k KV-tile indices per (qo_head, token) row from the FMHA max-score tensor.
+
+    Designed for the MQA proxy-KV sparse attention path where the dense pass uses
+    ``num_kv_heads_dense=1``, so ``max_score.shape[0] == num_kv_heads_real`` and
+    each head row is processed independently (no GQA reduction inside this call).
+
+    Parameters
+    ----------
+    max_score : torch.Tensor
+        Shape ``(num_qo_heads, max_k_tiles, total_qo_len)``, contiguous, float32.
+        Slots beyond the actual KV tile count must be pre-filled with ``-inf``
+        (fmha_sm100 does this automatically via ``torch.full``).
+    topk : int
+        Must be 16 or 32.
+    num_valid_pages : int, optional
+        Actual number of KV pages in the page table, i.e. ``ceil(kv_len / page_size)``.
+        ``max_k_tiles`` is round-up-aligned and always >= ``num_valid_pages``.
+        The kernel may select tile indices in ``[num_valid_pages, max_k_tiles-1]``
+        (all-``-inf`` padding tiles). Passing ``num_valid_pages`` replaces those
+        out-of-range indices with ``-1`` and sorts them to the tail, matching the
+        sparse FMHA kernel's kv_block_indexes contract.
+        **Strongly recommended**: omitting this allows OOB page-table accesses in
+        the sparse attention pass.
+    force_begin_blocks : int
+        Number of KV blocks at the beginning of the sequence (indices 0..N-1) to
+        always include in the top-k result, regardless of their scores.  Useful
+        for sink tokens.  Default 0.
+    force_end_blocks : int
+        Number of KV blocks at the end of the valid sequence (indices
+        nvp-N..nvp-1, closest to the current query) to always include.  Useful
+        for local-window attention.  Default 0.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(total_qo_len, num_qo_heads, topk)``, int32, ascending by tile index.
+        Out-of-range entries (if any) are ``-1`` at the tail.
+    """
+
+    assert max_score.dtype == torch.float32, f"max_score must be float32, got {max_score.dtype}"
+    assert max_score.dim() == 3, f"max_score must be 3D, got {max_score.shape}"
+    assert max_score.is_contiguous(), "max_score must be contiguous"
+    assert topk in (16, 32), f"topk must be 16 or 32, got {topk}"
+
+    num_qo_heads, max_k_tiles, total_qo_len = max_score.shape
+
+    # v2.3 kernel only supports the insertion-sort path (K < 12288).
+    assert max_k_tiles < 12288, (
+        f"max_k_tiles={max_k_tiles} >= 12288: v2.3 kernel only supports K < 12288 "
+        f"(radix-sort path not yet implemented). kv_len must be < {12288 * 128} tokens."
+    )
+
+    if num_valid_pages is not None:
+        assert 0 < num_valid_pages <= max_k_tiles, (
+            f"num_valid_pages={num_valid_pages} must be in (0, max_k_tiles={max_k_tiles}]"
+        )
+        nvp_arg = int(num_valid_pages)
+    else:
+        # v2.5_oob_clamp_in_kernel: kernel takes a unified num_valid_pages arg.
+        # When the caller doesn't supply one, pass max_k_tiles so the in-kernel
+        # `idx >= num_valid_pages` check never triggers (idx is always in
+        # [0, max_k_tiles)).
+        nvp_arg = int(max_k_tiles)
+
+    assert force_begin_blocks >= 0 and force_end_blocks >= 0, (
+        f"force_begin_blocks={force_begin_blocks} and force_end_blocks={force_end_blocks} "
+        f"must be non-negative"
+    )
+    assert force_begin_blocks + force_end_blocks <= topk, (
+        f"force_begin_blocks({force_begin_blocks}) + force_end_blocks({force_end_blocks}) "
+        f"= {force_begin_blocks + force_end_blocks} exceeds topk={topk}"
+    )
+
+    # v2.8_group_max_in_transpose: group_size consecutive score rows are reduced
+    # with a max inside the transpose, so the selector -- and every buffer past
+    # it -- works on num_qo_heads // group_size rows. Folding it here instead of
+    # in the caller saves a full read+write pass over the score tensor.
+    assert group_size >= 1 and num_qo_heads % group_size == 0, (
+        f"num_qo_heads={num_qo_heads} must be a multiple of group_size={group_size}"
+    )
+    out_heads = num_qo_heads // group_size
+    if group_reduce not in ("max", "sum"):
+        raise ValueError(
+            f"group_reduce must be 'max' or 'sum', got {group_reduce!r}")
+    # The fold rides inside the transpose either way; only the operator differs.
+    group_sum = 1 if group_reduce == "sum" else 0
+
+    # Workspace = transpose_buf only: (out_heads, max_k_tiles, total_qo_len) fp32.
+    workspace_size = out_heads * max_k_tiles * total_qo_len  # int32 elements
+
+    workspace_buffer = _alloc_workspace_buf(_BuffTag.sparse_topk_workspace, workspace_size, max_score.device, torch.int32)
+    
+    if output is not None:
+        output_indices = output
+    else:
+        output_indices = torch.empty(
+            total_qo_len, out_heads, topk,
+            dtype=torch.int32, device=max_score.device,
+        )
+
+    module = get_sparse_topk_module()
+    # MQA dense pass: num_kv_heads_dense=1, so h_r=num_qo_heads.
+    # The kernel only uses num_qo_heads = h_r * num_kv_heads as a product;
+    # passing num_kv_heads=1 is equivalent to any other valid factorisation.
+    #
+    # v2.5_oob_clamp_in_kernel: OOB clamp is folded into the kernel — the prior
+    # post-process torch.where + sort + torch.where chain (~84-101 us / call)
+    # is replaced by passing num_valid_pages directly to the kernel.
+    #
+    # v2.6_per_row_causal_bound: per_query_valid ([total_qo_len] int32, visible
+    # pages per query) bounds each row's scan, skipping the causal -inf tail
+    # whose ties otherwise drive the histogram into its refinement stages.
+    # Selections are identical either way; only the scanned area shrinks.
+    if per_query_valid is not None:
+        assert per_query_valid.dtype == torch.int32, "per_query_valid must be int32"
+        assert per_query_valid.shape == (total_qo_len,), (
+            f"per_query_valid must be [{total_qo_len}], got {tuple(per_query_valid.shape)}"
+        )
+        module.sparse_topk_select_causal(
+            max_score, output_indices, workspace_buffer,
+            per_query_valid.contiguous(),
+            topk,
+            nvp_arg,
+            int(force_begin_blocks),
+            int(force_end_blocks),
+            torch.cuda.current_stream().cuda_stream,
+            float(prescale),
+            int(group_size),
+            int(group_sum),
+        )
+    else:
+        module.sparse_topk_select(
+            max_score, output_indices, workspace_buffer,
+            topk,
+            nvp_arg,
+            int(force_begin_blocks),
+            int(force_end_blocks),
+            torch.cuda.current_stream().cuda_stream,
+            float(prescale),
+            int(group_size),
+            int(group_sum),
+        )
+
+    return output_indices
