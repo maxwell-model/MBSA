@@ -70,6 +70,23 @@ def _packed_lengths(
 
 
 @dataclass
+class PackedFixedRequest:
+    """Request-local, packed-GQA-tile-aligned staging for Fixed BSA."""
+
+    q_begin: int
+    q_end: int
+    k_begin: int
+    k_end: int
+    q_offset: int
+    logical_k_tokens: int
+    q: torch.Tensor
+    out: torch.Tensor
+    lse: torch.Tensor
+    k: torch.Tensor | None = None
+    v: torch.Tensor | None = None
+
+
+@dataclass
 class UnifiedAlignedPrefillPlan:
     q: torch.Tensor
     k: torch.Tensor
@@ -86,6 +103,7 @@ class UnifiedAlignedPrefillPlan:
     cu_k: torch.Tensor
     fixed_request_ranges: tuple[tuple[int, int, int, int], ...]
     fixed_packed_tiles: torch.Tensor
+    fixed_packed_requests: tuple[PackedFixedRequest, ...]
     out: torch.Tensor
     out_lse: torch.Tensor
     partial_dtype: torch.dtype
@@ -215,6 +233,70 @@ class UnifiedAlignedPrefillPlan:
 
     def run_fixed(self) -> None:
         paged = self.tile_plan.policy == PrefillPolicy.ALIGNED_PAGED
+        if self.batch != 1:
+            for request, staging in enumerate(self.fixed_packed_requests):
+                q_begin, q_end = staging.q_begin, staging.q_end
+                k_begin, k_end = staging.k_begin, staging.k_end
+                q_len = q_end - q_begin
+                q_offset = staging.q_offset
+                staging.q[:, q_offset : q_offset + q_len].copy_(
+                    self.q[q_begin:q_end]
+                )
+                if paged:
+                    request_k = self.k
+                    request_v = self.v
+                    request_page_table = self.tile_plan.page_table[
+                        request : request + 1
+                    ]
+                elif staging.k is not None:
+                    if staging.v is None:
+                        raise RuntimeError("packed Fixed V staging is missing")
+                    request_k = staging.k
+                    request_v = staging.v
+                    request_k[:, : k_end - k_begin].copy_(
+                        self.k[k_begin:k_end]
+                    )
+                    request_v[:, : k_end - k_begin].copy_(
+                        self.v[k_begin:k_end]
+                    )
+                    request_page_table = None
+                else:
+                    request_k = self.k[k_begin:k_end].unsqueeze(0)
+                    request_v = self.v[k_begin:k_end].unsqueeze(0)
+                    request_page_table = None
+                bsa_attn_sm100_blk128_fwd(
+                    staging.q,
+                    request_k,
+                    request_v,
+                    q2k_block_index=self.route_sentinel,
+                    block_sparse_num=16,
+                    block_sizes=None,
+                    softmax_scale=SPEC.head_dim**-0.5,
+                    out=staging.out,
+                    lse=staging.lse,
+                    return_lse=True,
+                    causal=True,
+                    implicit_fixed_support=True,
+                    logical_seqlen_k=staging.logical_k_tokens,
+                    page_table=request_page_table,
+                    use_clc_scheduler=self.fixed_use_clc_scheduler,
+                    output_layout=self.fixed_output_layout,
+                    split_p_arrive=self.fixed_split_p_arrive,
+                    sync_first_p_release=self.fixed_sync_first_p_release,
+                    implicit_fixed_load_reduce=self.fixed_tmem_load_reduce,
+                )
+                if self.fixed_output_layout is BsaOutputLayout.NON_SCATTERED:
+                    self.fixed_out[:, q_begin:q_end].copy_(
+                        staging.out[0, :, q_offset : q_offset + q_len]
+                    )
+                else:
+                    self.fixed_out[q_begin:q_end].copy_(
+                        staging.out[0, q_offset : q_offset + q_len]
+                    )
+                self.fixed_lse[:, :, q_begin:q_end].copy_(
+                    staging.lse[:, :, q_offset : q_offset + q_len]
+                )
+            return
         bsa_attn_sm100_blk128_fwd(
             self.q,
             self.k,
@@ -398,6 +480,20 @@ def _validate_indexer_operands(
 
 
 @dataclass
+class CutedslPackedRouterRequest:
+    """Prepared request-local Router workspaces for packed BF16 prefill."""
+
+    q_begin: int
+    q_end: int
+    logical_k_tokens: int
+    page_indices: torch.Tensor
+    use_page_table: bool
+    route: torch.Tensor
+    partition_scores: torch.Tensor | None = None
+    partition_ids: torch.Tensor | None = None
+
+
+@dataclass
 class UnifiedC123AlignedChainPlan:
     """C123 Score producer feeding the consumer-native aligned FWD plan."""
 
@@ -427,6 +523,7 @@ class UnifiedC123AlignedChainPlan:
     cutedsl_use_page_table: bool = False
     cutedsl_partition_scores: torch.Tensor | None = None
     cutedsl_partition_ids: torch.Tensor | None = None
+    cutedsl_packed_requests: tuple[CutedslPackedRouterRequest, ...] = ()
 
     def with_indexer_precision(
         self,
@@ -489,13 +586,58 @@ class UnifiedC123AlignedChainPlan:
         if self.attention.fixed_only:
             return
         if self.use_cutedsl_router:
-            if (
-                self.cutedsl_index_k is None
-                or self.cutedsl_index_pages is None
-                or self.cutedsl_logical_k_tokens is None
-            ):
+            if self.cutedsl_index_k is None:
                 raise RuntimeError("CuTeDSL router workspace was not prepared")
             compact_ids = self.candidate_storage.view(torch.int32)
+            if self.cutedsl_packed_requests:
+                for request in self.cutedsl_packed_requests:
+                    request_q = self.index_q[request.q_begin : request.q_end]
+                    if request.partition_scores is None:
+                        bf16_indexer_local_top16(
+                            request_q,
+                            self.cutedsl_index_k,
+                            partition_blocks=self.candidate_partition_blocks,
+                            page_indices=request.page_indices,
+                            logical_k_tokens=request.logical_k_tokens,
+                            use_page_table=request.use_page_table,
+                            out_route=request.route,
+                        )
+                    else:
+                        if request.partition_ids is None:
+                            raise RuntimeError(
+                                "packed CuTeDSL partition IDs were not prepared"
+                            )
+                        bf16_indexer_local_top16(
+                            request_q,
+                            self.cutedsl_index_k,
+                            partition_blocks=self.candidate_partition_blocks,
+                            page_indices=request.page_indices,
+                            logical_k_tokens=request.logical_k_tokens,
+                            use_page_table=request.use_page_table,
+                            out_scores=request.partition_scores,
+                            out_ids=request.partition_ids,
+                        )
+                        merge_bf16_indexer_exact_route(
+                            request.partition_scores,
+                            request.partition_ids,
+                            q_offset=request.logical_k_tokens
+                            - (request.q_end - request.q_begin),
+                            kv_blocks=(
+                                request.logical_k_tokens + SPEC.block_size - 1
+                            )
+                            // SPEC.block_size,
+                            out=request.route,
+                        )
+                    compact_ids[
+                        :, SPEC.dynamic_topk : 2 * SPEC.dynamic_topk,
+                        request.q_begin : request.q_end,
+                    ].copy_(request.route.permute(0, 2, 1))
+                return
+            if (
+                self.cutedsl_index_pages is None
+                or self.cutedsl_logical_k_tokens is None
+            ):
+                raise RuntimeError("batch-one CuTeDSL router metadata is missing")
             if self.cutedsl_partition_scores is None:
                 bf16_indexer_local_top16(
                     self.index_q,
@@ -737,6 +879,10 @@ def prepare_unified_aligned_prefill(
     batch = len(q_lens)
     max_seqlen_q = max(q_lens)
     skv = max(kv_lens)
+    if batch != 1 and fuse_fixed_state_in_dynamic_combine:
+        raise ValueError(
+            "packed prefill requires separate Fixed/Dynamic states and K2 merge"
+        )
     if compact_batch1_schedule and batch != 1:
         raise ValueError("compact_batch1_schedule requires batch size one")
     # The MSA fast tile contract uses batch-one address arithmetic. Ragged
@@ -981,6 +1127,69 @@ def prepare_unified_aligned_prefill(
          for tile in range(((qe - qb) * SPEC.group_size + 127) // 128)],
         dtype=torch.int32, device=q.device,
     )
+    fixed_packed_requests: tuple[PackedFixedRequest, ...] = ()
+    if batch != 1:
+        request_staging = []
+        for q_begin, q_end, k_begin, k_end in fixed_request_ranges:
+            q_len = q_end - q_begin
+            k_len = k_end - k_begin
+            q_tile = SPEC.block_size // SPEC.group_size
+            q_padding = (-q_len) % q_tile
+            q_offset = min(q_padding, k_len - q_len)
+            k_padding = q_padding - q_offset
+            padded_q = q_len + q_padding
+            logical_k_tokens = k_len + k_padding
+            request_q = torch.zeros(
+                (1, padded_q, SPEC.q_heads, SPEC.head_dim),
+                dtype=q.dtype,
+                device=q.device,
+            )
+            if fixed_output_layout is BsaOutputLayout.NON_SCATTERED:
+                request_out = torch.empty(
+                    (
+                        1,
+                        SPEC.kv_heads,
+                        padded_q,
+                        SPEC.group_size,
+                        SPEC.head_dim,
+                    ),
+                    dtype=q.dtype,
+                    device=q.device,
+                )
+            else:
+                request_out = torch.empty_like(request_q)
+            request_k = None
+            request_v = None
+            if (
+                tile_plan.policy is PrefillPolicy.ALIGNED_CONTIGUOUS
+                and k_padding
+            ):
+                request_k = torch.zeros(
+                    (1, logical_k_tokens, SPEC.kv_heads, SPEC.head_dim),
+                    dtype=k.dtype,
+                    device=k.device,
+                )
+                request_v = torch.zeros_like(request_k)
+            request_staging.append(
+                PackedFixedRequest(
+                    q_begin=q_begin,
+                    q_end=q_end,
+                    k_begin=k_begin,
+                    k_end=k_end,
+                    q_offset=q_offset,
+                    logical_k_tokens=logical_k_tokens,
+                    q=request_q,
+                    out=request_out,
+                    lse=torch.empty(
+                        (1, SPEC.q_heads, padded_q),
+                        dtype=torch.float32,
+                        device=q.device,
+                    ),
+                    k=request_k,
+                    v=request_v,
+                )
+            )
+        fixed_packed_requests = tuple(request_staging)
     return UnifiedAlignedPrefillPlan(
         q=q,
         k=k,
@@ -997,6 +1206,7 @@ def prepare_unified_aligned_prefill(
         cu_k=cu_k,
         fixed_request_ranges=fixed_request_ranges,
         fixed_packed_tiles=fixed_packed_tiles,
+        fixed_packed_requests=fixed_packed_requests,
         out=out,
         out_lse=out_lse,
         partial_dtype=partial_dtype,
@@ -1011,13 +1221,17 @@ def prepare_unified_aligned_prefill(
         fixed_use_clc_scheduler=fixed_use_clc_scheduler,
         fixed_output_layout=fixed_output_layout,
         compact_batch1_schedule=compact_batch1_schedule,
-        fixed_split_p_arrive=fixed_split_p_arrive,
-        fixed_sync_first_p_release=fixed_sync_first_p_release,
-        # The 8K boundary has no profitable fully-visible fixed tile.  At
-        # 512K+ the Fixed-BSA share makes the measured effect smaller than the
-        # promotion/noise gate, so keep the inherited cubin outside the
-        # contiguous 16K--256K material-gain interval.
-        fixed_tmem_load_reduce=16384 <= skv <= 262144,
+        fixed_split_p_arrive=(fixed_split_p_arrive if batch == 1 else None),
+        fixed_sync_first_p_release=(
+            fixed_sync_first_p_release if batch == 1 else False
+        ),
+        # Split barriers and the reduced-TMEM schedule are qualified for the
+        # uniform batch-one grid only.  Packed request-local launches use the
+        # conservative pipeline until their independent tuning gate exists.
+        # For batch one, retain the measured 16K--256K promotion interval.
+        fixed_tmem_load_reduce=(
+            batch == 1 and 16384 <= skv <= 262144
+        ),
         native_scheduler_metadata=native_scheduler_metadata,
         lpt_scheduler_metadata=lpt_scheduler_metadata,
         use_lpt_schedule=bool(prepare_lpt_schedule),
@@ -1076,11 +1290,13 @@ def prepare_unified_c123_aligned_chain(
     if cu_seqlens_q is None:
         if not isinstance(tile_plan.q_offset_tokens, int):
             raise ValueError("batch-one chain requires an integer q_offset_tokens")
-        q_lens = (total_q,)
+        q_prefix = (0, total_q)
         kv_lens = (tile_plan.q_offset_tokens + total_q,)
+        k_prefix = (0, kv_lens[0])
+        q_lens = (total_q,)
     else:
         total_k = int(cu_seqlens_k[-1].item())
-        _, _, q_lens, kv_lens = _packed_lengths(
+        q_prefix, k_prefix, q_lens, kv_lens = _packed_lengths(
             cu_seqlens_q,
             cu_seqlens_k,
             total_q=total_q,
@@ -1169,12 +1385,18 @@ def prepare_unified_c123_aligned_chain(
         40960 <= skv <= 49152 and skv % 4096 == 0
     )
     if fixed_use_clc_scheduler is None:
-        fixed_use_clc_scheduler = not (
-            overlap_fixed_score
-            and batch == 1
-            and max_seqlen_q == 8192
-            and static_fixed_region
-        )
+        if batch != 1:
+            # Packed requests are described by a flat, request-local tile
+            # list.  Keep that descriptor stream on the static scheduler;
+            # the inherited CLC path assumes one uniform logical Q/K extent
+            # and can leave warp roles consuming different request records.
+            fixed_use_clc_scheduler = False
+        else:
+            fixed_use_clc_scheduler = not (
+                overlap_fixed_score
+                and max_seqlen_q == 8192
+                and static_fixed_region
+            )
     attention = prepare_unified_aligned_prefill(
         q,
         k,
@@ -1201,15 +1423,12 @@ def prepare_unified_c123_aligned_chain(
     cutedsl_use_page_table = False
     cutedsl_partition_scores = None
     cutedsl_partition_ids = None
+    cutedsl_packed_requests: tuple[CutedslPackedRouterRequest, ...] = ()
     if use_cutedsl_router and not attention.fixed_only:
         if not sm103_native:
             raise ValueError("the CuTeDSL router requires SM103")
         if precision is not IndexerPrecision.BF16:
             raise ValueError("the CuTeDSL router currently supports BF16 only")
-        if batch != 1 or total_q % SPEC.block_size:
-            raise ValueError(
-                "the CuTeDSL router requires block-aligned Q and batch-one prefill"
-            )
         if index_k.ndim == 4:
             if tuple(index_k.shape[1:]) != (
                 1,
@@ -1221,6 +1440,8 @@ def prepare_unified_c123_aligned_chain(
                 )
             cutedsl_index_k = index_k.view(-1, 1, SPEC.head_dim)
         elif index_k.ndim == 3:
+            if batch != 1:
+                raise ValueError("packed CuTeDSL routing requires paged Index K")
             if tuple(index_k.shape) != (skv, 1, SPEC.head_dim):
                 raise ValueError(
                     "CuTeDSL index_k must be [Skv,1,128] when unpaged"
@@ -1235,40 +1456,132 @@ def prepare_unified_c123_aligned_chain(
         if int(cutedsl_index_k.shape[0]) % SPEC.block_size:
             raise ValueError("CuTeDSL physical Index K storage must be page aligned")
         physical_pages = int(cutedsl_index_k.shape[0]) // SPEC.block_size
-        if index_page_indices.ndim != 1 or index_page_indices.numel() < blocks:
-            raise ValueError(
-                "batch-one CuTeDSL index_page_indices must cover all logical pages"
+        request_blocks = tuple(
+            (length + SPEC.block_size - 1) // SPEC.block_size
+            for length in kv_lens
+        )
+        if index_page_indices.ndim == 2:
+            if index_page_indices.shape[0] != batch or any(
+                index_page_indices.shape[1] < count for count in request_blocks
+            ):
+                raise ValueError(
+                    "2-D index_page_indices must be [B,>=max logical pages]"
+                )
+            request_pages = tuple(
+                index_page_indices[index, :count].clone()
+                for index, count in enumerate(request_blocks)
             )
-        cutedsl_index_pages = index_page_indices[:blocks].contiguous()
-        if bool(torch.any(cutedsl_index_pages < 0)) or bool(
-            torch.any(cutedsl_index_pages >= physical_pages)
+        elif index_page_indices.ndim == 1:
+            active_pages = sum(request_blocks)
+            if index_page_indices.numel() == active_pages:
+                page_offsets = [0]
+                for count in request_blocks:
+                    page_offsets.append(page_offsets[-1] + count)
+                request_pages = tuple(
+                    index_page_indices[
+                        page_offsets[index] : page_offsets[index + 1]
+                    ].clone()
+                    for index in range(batch)
+                )
+            elif index_page_indices.numel() % batch == 0:
+                row_width = index_page_indices.numel() // batch
+                if row_width < max(request_blocks):
+                    raise ValueError("flattened page-table rows are too short")
+                page_rows = index_page_indices.view(batch, row_width)
+                request_pages = tuple(
+                    page_rows[index, :count].clone()
+                    for index, count in enumerate(request_blocks)
+                )
+            else:
+                raise ValueError(
+                    "1-D index_page_indices must contain active pages or padded rows"
+                )
+        else:
+            raise ValueError("index_page_indices must be rank 1 or 2")
+        if any(
+            bool(torch.any(pages < 0))
+            or bool(torch.any(pages >= physical_pages))
+            for pages in request_pages
         ):
             raise ValueError("index_page_indices references Index K out of range")
-        cutedsl_logical_k_tokens = skv
-        identity_pages = torch.arange(
-            blocks, dtype=torch.int32, device=index_page_indices.device
-        )
-        cutedsl_use_page_table = not torch.equal(
-            cutedsl_index_pages, identity_pages
-        )
-        cutedsl_partitions = (blocks + partition_blocks - 1) // partition_blocks
-        if cutedsl_partitions > 1:
-            partition_shape = (
-                SPEC.kv_heads,
-                cutedsl_partitions,
-                total_q,
-                SPEC.dynamic_topk,
-            )
-            cutedsl_partition_scores = torch.empty(
-                partition_shape,
-                dtype=torch.float32,
-                device=q.device,
-            )
-            cutedsl_partition_ids = torch.empty(
-                partition_shape,
+
+        if batch == 1:
+            cutedsl_index_pages = request_pages[0]
+            cutedsl_logical_k_tokens = kv_lens[0]
+            identity_pages = torch.arange(
+                request_blocks[0],
                 dtype=torch.int32,
-                device=q.device,
+                device=index_page_indices.device,
             )
+            cutedsl_use_page_table = not torch.equal(
+                cutedsl_index_pages, identity_pages
+            )
+            cutedsl_partitions = (
+                request_blocks[0] + partition_blocks - 1
+            ) // partition_blocks
+            if cutedsl_partitions > 1:
+                partition_shape = (
+                    SPEC.kv_heads,
+                    cutedsl_partitions,
+                    total_q,
+                    SPEC.dynamic_topk,
+                )
+                cutedsl_partition_scores = torch.empty(
+                    partition_shape,
+                    dtype=torch.float32,
+                    device=q.device,
+                )
+                cutedsl_partition_ids = torch.empty(
+                    partition_shape,
+                    dtype=torch.int32,
+                    device=q.device,
+                )
+        else:
+            packed_requests = []
+            for request_index, (q_len, kv_len, pages, kv_blocks) in enumerate(
+                zip(q_lens, kv_lens, request_pages, request_blocks)
+            ):
+                partitions = (
+                    kv_blocks + partition_blocks - 1
+                ) // partition_blocks
+                route = torch.empty(
+                    (SPEC.kv_heads, q_len, SPEC.dynamic_topk),
+                    dtype=torch.int32,
+                    device=q.device,
+                )
+                scores = None
+                ids = None
+                if partitions > 1:
+                    candidate_shape = (
+                        SPEC.kv_heads,
+                        partitions,
+                        q_len,
+                        SPEC.dynamic_topk,
+                    )
+                    scores = torch.empty(
+                        candidate_shape, dtype=torch.float32, device=q.device
+                    )
+                    ids = torch.empty(
+                        candidate_shape, dtype=torch.int32, device=q.device
+                    )
+                identity_pages = torch.arange(
+                    kv_blocks,
+                    dtype=torch.int32,
+                    device=index_page_indices.device,
+                )
+                packed_requests.append(
+                    CutedslPackedRouterRequest(
+                        q_begin=q_prefix[request_index],
+                        q_end=q_prefix[request_index + 1],
+                        logical_k_tokens=kv_len,
+                        page_indices=pages,
+                        use_page_table=not torch.equal(pages, identity_pages),
+                        route=route,
+                        partition_scores=scores,
+                        partition_ids=ids,
+                    )
+                )
+            cutedsl_packed_requests = tuple(packed_requests)
     # Local Top16 requires the non-split 256-row Score tile. Short Q uses
     # the existing dense Score selector, with all capture-time storage prepared.
     dense_route_state = None
@@ -1315,6 +1628,7 @@ def prepare_unified_c123_aligned_chain(
         cutedsl_use_page_table=cutedsl_use_page_table,
         cutedsl_partition_scores=cutedsl_partition_scores,
         cutedsl_partition_ids=cutedsl_partition_ids,
+        cutedsl_packed_requests=cutedsl_packed_requests,
         dense_route_state=dense_route_state,
         canonicalize_dynamic_padding=skv < 32768,
         fuse_dynamic_padding_in_csr=skv < 32768,

@@ -29,8 +29,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--shuffle-index-pages", action="store_true")
     args = parser.parse_args()
-    if args.q <= 0 or args.q % BLOCK or args.kv < args.q:
-        raise ValueError("require block-aligned positive Q <= KV")
+    if args.q <= 0 or args.kv < args.q:
+        raise ValueError("require positive Q <= KV")
 
     torch.manual_seed(args.seed)
     blocks = (args.kv + BLOCK - 1) // BLOCK

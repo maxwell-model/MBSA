@@ -572,8 +572,8 @@ def _validate_inputs(
         raise ValueError("Q and K must be CUDA tensors")
     if not q.is_contiguous() or not k.is_contiguous():
         raise ValueError("Q and K must be contiguous")
-    if q.shape[0] % _BLOCK or k.shape[0] % _BLOCK:
-        raise ValueError("Q and physical K storage must be block aligned")
+    if k.shape[0] % _BLOCK:
+        raise ValueError("physical K storage must be block aligned")
     if logical_k_tokens < q.shape[0] or logical_k_tokens <= 0:
         raise ValueError("logical K length must be positive and cover Q")
     logical_blocks = (logical_k_tokens + _BLOCK - 1) // _BLOCK

@@ -57,11 +57,72 @@ CUDA_VISIBLE_DEVICES=0 python3 bench/bench_bf16_cutedsl_router_e2e.py \
   --warmups 1 --pairs 1 --l2-flush-mib 64
 ```
 
+## Checkpoint 2: packed variable-length requests
+
+Packed BF16 prefill now accepts request-local Q and KV lengths through
+`cu_seqlens_q` and `cu_seqlens_k`. Each request owns its logical Index-K page
+table, Router workspace, and optional hierarchical Top-16 workspace. Router
+outputs remain request-local logical block IDs and are copied into the
+corresponding Q slice of the global compact ID planes before the unchanged
+packed KV-centric CSR/LPT builder runs.
+
+The coverage path deliberately favors robust semantics over final packed-grid
+tuning:
+
+- the CuTeDSL Router launches once per request and supports partial final Q
+  tiles;
+- Fixed BSA stages each request in a packed-GQA-tile-aligned Q buffer. Padding
+  is split between the Q prefix and a masked KV/Q suffix when necessary, so
+  bottom-right causal positions and original KV block boundaries are preserved;
+- Dynamic BSA consumes the existing packed CSR representation;
+- Fixed and Dynamic states use the independent K2 online-softmax merge because
+  the fused initial-state combine is currently batch-one only.
+
+The request-local Fixed path uses the conservative static pipeline. CLC,
+split-barrier, and reduced-TMEM variants remain enabled only for their
+qualified uniform batch-one domain. This checkpoint does not claim that the
+experimental single-launch packed Fixed kernel is production-ready.
+
+The packed full-chain gate uses `Q=[777,1153]` and
+`KV=[33007,16641]`, exercising two partial Q tiles, two partial KV tails, and
+different request-local causal offsets. Both physical Index-K layouts passed:
+
+| Index page table | Dynamic Top-16 | KV-centric CSR | O | LSE |
+|---|---|---|---|---|
+| contiguous request pages | exact | exact | bitwise | bitwise |
+| globally permuted pages | exact | exact | bitwise | bitwise |
+
+A second full-chain boundary case, `Q=[2047,2049]` and `KV=[2047,2049]`,
+forces KV-tail staging for requests with no prefix gap. It also matched the
+opt3 route, CSR, O, and LSE bitwise.
+
+A five-pair cold-L2 smoke run on the contiguous-page case measured
+0.767 ms for the CuTeDSL coverage path versus 0.658 ms for the opt3 Router
+(+16.49%). The approximately 0.109 ms delta includes two request-local Router
+launches plus Fixed-BSA staging and copies. It is not an optimized packed-grid
+result or a production performance qualification; the purpose of this
+checkpoint is complete variable-length semantics without a magnitude-level
+regression.
+
+```bash
+CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
+  --full-chain
+
+CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
+  --full-chain --shuffle-index-pages
+
+CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
+  --full-chain --warmups 2 --pairs 5 --l2-flush-mib 64
+
+CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
+  --full-chain --q-lens 2047 2049 --kv-lens 2047 2049
+```
+
 ## Remaining opt2 work
 
-1. packed variable-length requests, including request-local Q/K offsets and
-   partial Q tiles;
-2. a production performance sweep for the new coverage shapes;
+1. a production performance sweep for the new coverage shapes;
+2. replacement of request-local Router/Fixed launches with tuned packed-grid
+   variants where measurements justify the added complexity;
 3. evaluation of dense batch greater than one and additional Indexer
    precisions after packed BF16 is qualified.
 
