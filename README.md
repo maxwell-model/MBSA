@@ -25,6 +25,9 @@ fallback implementation.
 
 See [docs/CUTEDSL_OPT1.md](docs/CUTEDSL_OPT1.md) for its execution contract,
 validated performance, reproduction command, and source boundary.
+[docs/CUTEDSL_OPT2.md](docs/CUTEDSL_OPT2.md) tracks the production-coverage
+extension, beginning with non-identity Index-K page tables and partial KV
+tails.
 
 <p align="center">
   <img src="docs/flash_bsa_execution.svg" width="100%" alt="Flash BSA Triton execution flow">
@@ -181,6 +184,8 @@ tests/
 tools/
   check_independence.py
 docs/
+  CUTEDSL_OPT1.md
+  CUTEDSL_OPT2.md
   TRITON_BASELINE.md
   flash_bsa_execution.svg
 ```

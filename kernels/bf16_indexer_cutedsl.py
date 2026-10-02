@@ -58,28 +58,34 @@ class Bf16IndexerLocalTop16Sm103:
         partition_blocks: int,
         direct_route: bool = False,
         compact_ids: bool = False,
+        use_page_table: bool = False,
+        logical_k_tail: bool = False,
     ) -> None:
         if partition_blocks not in (1024, 2048, 4096, 8192):
             raise ValueError("partition_blocks must be 1024, 2048, 4096, or 8192")
         self.partition_blocks = int(partition_blocks)
         self.direct_route = bool(direct_route)
         self.compact_ids = bool(compact_ids)
+        self.use_page_table = bool(use_page_table)
+        self.logical_k_tail = bool(logical_k_tail)
 
     @cute.jit
     def __call__(
         self,
         q: cute.Tensor,
         k: cute.Tensor,
+        page_indices: cute.Tensor,
         candidate_scores: cute.Tensor,
         candidate_ids: cute.Tensor,
         route: cute.Tensor,
+        logical_k_tokens: Int32,
         q_offset: Int32,
         stream: cuda.CUstream,
     ) -> None:
         dtype = q.element_type
         total_q = q.shape[0]
         q_heads = q.shape[1]
-        total_k = k.shape[0]
+        physical_k_tokens = k.shape[0]
         k_heads = k.shape[1]
         q_mma = cute.make_tensor(
             q.iterator,
@@ -91,7 +97,7 @@ class Bf16IndexerLocalTop16Sm103:
         k_mma = cute.make_tensor(
             k.iterator,
             cute.make_layout(
-                (total_k, self.head_dim, k_heads),
+                (physical_k_tokens, self.head_dim, k_heads),
                 stride=(k_heads * self.head_dim, 1, self.head_dim),
             ),
         )
@@ -129,13 +135,17 @@ class Bf16IndexerLocalTop16Sm103:
             tiled_mma,
             cluster.shape,
         )
-        kv_blocks = cute.ceil_div(total_k, self.k_tile)
+        effective_k_tokens = physical_k_tokens
+        if cutlass.const_expr(self.logical_k_tail):
+            effective_k_tokens = logical_k_tokens
+        kv_blocks = cute.ceil_div(effective_k_tokens, self.k_tile)
         partitions = cute.ceil_div(kv_blocks, self.partition_blocks)
         q_tiles = cute.ceil_div(total_q, self.q_tile)
         self.kernel(
             tiled_mma,
             tma_q,
             tma_k,
+            page_indices,
             candidate_scores,
             candidate_ids,
             route,
@@ -144,7 +154,7 @@ class Bf16IndexerLocalTop16Sm103:
             q_heads,
             k_heads,
             total_q,
-            total_k,
+            effective_k_tokens,
             q_offset,
         ).launch(
             grid=(q_tiles, q_heads, partitions),
@@ -159,6 +169,7 @@ class Bf16IndexerLocalTop16Sm103:
         tiled_mma: cute.TiledMma,
         tma_q: cpasync.TmaInfo,
         tma_k: cpasync.TmaInfo,
+        mPageIndices: cute.Tensor,
         mCandidateScores: cute.Tensor,
         mCandidateIds: cute.Tensor,
         mRoute: cute.Tensor,
@@ -167,7 +178,7 @@ class Bf16IndexerLocalTop16Sm103:
         q_heads: Int32,
         k_heads: Int32,
         total_q: Int32,
-        total_k: Int32,
+        logical_k_tokens: Int32,
         q_offset: Int32,
     ) -> None:
         q_tile_idx, hq, partition_idx = cute.arch.block_idx()
@@ -179,7 +190,9 @@ class Bf16IndexerLocalTop16Sm103:
         q_tile_last = q_tile_start + Int32(self.q_tile - 1)
         if q_tile_last >= total_q:
             q_tile_last = total_q - Int32(1)
-        kv_blocks = (total_k + Int32(self.k_tile - 1)) // Int32(self.k_tile)
+        kv_blocks = (
+            logical_k_tokens + Int32(self.k_tile - 1)
+        ) // Int32(self.k_tile)
         partition_begin = partition_idx * Int32(self.partition_blocks)
         partition_end = partition_begin + Int32(self.partition_blocks)
         if partition_end > kv_blocks:
@@ -303,10 +316,15 @@ class Bf16IndexerLocalTop16Sm103:
                 )
                 q_empty.commit()
                 for block in cutlass.range(partition_begin, partition_end, unroll=1):
+                    # ``block`` remains the logical route ID. Only the K load
+                    # is translated through the logical-to-physical page map.
+                    physical_block = block
+                    if cutlass.const_expr(self.use_page_table):
+                        physical_block = mPageIndices[block]
                     k_empty = k_producer.acquire_and_advance()
                     cute.copy(
                         tma_k.atom,
-                        tKgK[(None, block, 0, hk)],
+                        tKgK[(None, physical_block, 0, hk)],
                         tKsK[(None, k_empty.index)],
                         tma_bar_ptr=k_empty.barrier,
                     )
@@ -536,7 +554,12 @@ class Bf16IndexerExactRouteSm103:
                     mRoute[head, query, route_slot] = top_ids[route_slot]
 
 
-def _validate_inputs(q: torch.Tensor, k: torch.Tensor) -> None:
+def _validate_inputs(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    page_indices: torch.Tensor,
+    logical_k_tokens: int,
+) -> None:
     if q.dtype != torch.bfloat16 or k.dtype != torch.bfloat16:
         raise TypeError("BF16 Indexer requires BF16 Q/K")
     if q.ndim != 3 or k.ndim != 3:
@@ -550,9 +573,26 @@ def _validate_inputs(q: torch.Tensor, k: torch.Tensor) -> None:
     if not q.is_contiguous() or not k.is_contiguous():
         raise ValueError("Q and K must be contiguous")
     if q.shape[0] % _BLOCK or k.shape[0] % _BLOCK:
-        raise ValueError("Q/K token dimensions must be block aligned")
-    if q.shape[0] > k.shape[0]:
-        raise ValueError("Q length cannot exceed K length")
+        raise ValueError("Q and physical K storage must be block aligned")
+    if logical_k_tokens < q.shape[0] or logical_k_tokens <= 0:
+        raise ValueError("logical K length must be positive and cover Q")
+    logical_blocks = (logical_k_tokens + _BLOCK - 1) // _BLOCK
+    physical_blocks = k.shape[0] // _BLOCK
+    if logical_blocks > physical_blocks:
+        raise ValueError("physical K storage does not cover logical K length")
+    if (
+        page_indices.ndim != 1
+        or page_indices.dtype != torch.int32
+        or page_indices.device != q.device
+        or not page_indices.is_contiguous()
+        or page_indices.numel() < logical_blocks
+    ):
+        raise ValueError(
+            "page_indices must be contiguous CUDA int32 [>=logical K blocks]"
+        )
+    # Page-value bounds are validated once by the prepared production plan.
+    # Do not introduce a device-to-host synchronization in this launch-time
+    # wrapper: it is called on every replay and belongs inside the timed path.
 
 
 def bf16_indexer_local_top16(
@@ -560,6 +600,9 @@ def bf16_indexer_local_top16(
     k: torch.Tensor,
     *,
     partition_blocks: int,
+    page_indices: torch.Tensor | None = None,
+    logical_k_tokens: int | None = None,
+    use_page_table: bool | None = None,
     out_scores: torch.Tensor | None = None,
     out_ids: torch.Tensor | None = None,
     out_route: torch.Tensor | None = None,
@@ -567,8 +610,22 @@ def bf16_indexer_local_top16(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return exact per-partition dynamic Top-16 scores and logical block ids."""
 
-    _validate_inputs(q, k)
-    kv_blocks = k.shape[0] // _BLOCK
+    if logical_k_tokens is None:
+        logical_k_tokens = int(k.shape[0])
+    else:
+        logical_k_tokens = int(logical_k_tokens)
+    kv_blocks = (logical_k_tokens + _BLOCK - 1) // _BLOCK
+    logical_k_tail = logical_k_tokens != int(k.shape[0])
+    page_indices_provided = page_indices is not None
+    if page_indices is None:
+        page_indices = torch.arange(
+            kv_blocks, dtype=torch.int32, device=q.device
+        )
+    if use_page_table is None:
+        use_page_table = page_indices_provided
+    else:
+        use_page_table = bool(use_page_table)
+    _validate_inputs(q, k, page_indices, logical_k_tokens)
     partitions = (kv_blocks + partition_blocks - 1) // partition_blocks
     if out_route is not None and out_compact_ids is not None:
         raise ValueError("out_route and out_compact_ids are mutually exclusive")
@@ -647,23 +704,28 @@ def bf16_indexer_local_top16(
         # The device branch is compile-time disabled; reuse an existing int32
         # tensor so the generic call ABI needs no throwaway allocation.
         route = ids
-    q_offset = k.shape[0] - q.shape[0]
+    q_offset = logical_k_tokens - q.shape[0]
     stream = cuda.CUstream(torch.cuda.current_stream(q.device).cuda_stream)
     args = (
         from_dlpack(q.detach(), assumed_align=16),
         from_dlpack(k.detach(), assumed_align=16),
+        from_dlpack(page_indices, assumed_align=16),
         from_dlpack(scores, assumed_align=16),
         from_dlpack(ids, assumed_align=16),
         from_dlpack(route, assumed_align=16),
+        Int32(logical_k_tokens),
         Int32(q_offset),
     )
     key = (
         q.device.index,
         tuple(q.shape),
         tuple(k.shape),
+        tuple(page_indices.shape),
         int(partition_blocks),
         direct_route,
         compact_ids,
+        use_page_table,
+        logical_k_tail,
     )
     compiled = _COMPILE_CACHE.get(key)
     if compiled is None:
@@ -672,6 +734,8 @@ def bf16_indexer_local_top16(
                 partition_blocks=partition_blocks,
                 direct_route=direct_route,
                 compact_ids=compact_ids,
+                use_page_table=use_page_table,
+                logical_k_tail=logical_k_tail,
             ),
             *args,
             stream,
@@ -781,10 +845,15 @@ def bf16_indexer_exact_route(
     k: torch.Tensor,
     *,
     partition_blocks: int,
+    page_indices: torch.Tensor | None = None,
+    logical_k_tokens: int | None = None,
+    use_page_table: bool | None = None,
 ) -> torch.Tensor:
     """Run the specialized Score/Top-16 pipeline and exact route merge."""
 
-    kv_blocks = int(k.shape[0] // _BLOCK)
+    if logical_k_tokens is None:
+        logical_k_tokens = int(k.shape[0])
+    kv_blocks = (int(logical_k_tokens) + _BLOCK - 1) // _BLOCK
     partitions = (kv_blocks + partition_blocks - 1) // partition_blocks
     if partitions == 1:
         route = torch.empty(
@@ -796,6 +865,9 @@ def bf16_indexer_exact_route(
             q,
             k,
             partition_blocks=partition_blocks,
+            page_indices=page_indices,
+            logical_k_tokens=logical_k_tokens,
+            use_page_table=use_page_table,
             out_route=route,
         )
         return route
@@ -803,11 +875,14 @@ def bf16_indexer_exact_route(
         q,
         k,
         partition_blocks=partition_blocks,
+        page_indices=page_indices,
+        logical_k_tokens=logical_k_tokens,
+        use_page_table=use_page_table,
     )
     return merge_bf16_indexer_exact_route(
         scores,
         ids,
-        q_offset=int(k.shape[0] - q.shape[0]),
+        q_offset=int(logical_k_tokens - q.shape[0]),
         kv_blocks=kv_blocks,
     )
 

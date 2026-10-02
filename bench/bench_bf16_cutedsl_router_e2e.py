@@ -24,6 +24,11 @@ def main() -> None:
     parser.add_argument("--warmups", type=int, default=5)
     parser.add_argument("--pairs", type=int, default=11)
     parser.add_argument("--l2-flush-mib", type=int, default=256)
+    parser.add_argument(
+        "--shuffle-index-pages",
+        action="store_true",
+        help="store Index K in a deterministic non-identity physical page order",
+    )
     args = parser.parse_args()
 
     case = Case(
@@ -32,6 +37,24 @@ def main() -> None:
         fused_state=True,
         partial_dtype=torch.bfloat16,
     )
+    if args.shuffle_index_pages:
+        # Preserve the logical Index-K sequence while relocating each page to
+        # a different physical slot. Both paths receive the same logical-to-
+        # physical table; selected route IDs must remain logical.
+        generator = torch.Generator(device="cuda")
+        generator.manual_seed(args.seed + 10_003)
+        logical_to_physical = torch.randperm(
+            case.pages,
+            dtype=torch.int64,
+            device="cuda",
+            generator=generator,
+        )
+        physical_index_k = torch.empty_like(case.index_k)
+        physical_index_k.index_copy_(
+            0, logical_to_physical, case.index_k
+        )
+        case.index_k = physical_index_k
+        case.page_ids = logical_to_physical.to(torch.int32)
     use_lpt = args.kv < 32768
     baseline = build_overlap(case, prepare_lpt_schedule=use_lpt)
     candidate = build_overlap(
@@ -116,6 +139,9 @@ def main() -> None:
                 "sq": case.sq,
                 "seed": args.seed,
                 "l2_flush_mib": args.l2_flush_mib,
+                "index_page_table": (
+                    "permuted" if args.shuffle_index_pages else "identity"
+                ),
                 "score_partition_blocks": candidate.candidate_partition_blocks,
                 "score_partitions": (
                     1

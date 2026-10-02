@@ -135,6 +135,8 @@ def main() -> None:
             q,
             k,
             partition_blocks=args.partition_blocks,
+            page_indices=page_ids,
+            logical_k_tokens=args.kv,
             out_scores=new_scores,
             out_ids=new_ids,
         )
@@ -198,6 +200,8 @@ def main() -> None:
             q,
             k,
             partition_blocks=args.partition_blocks,
+            page_indices=page_ids,
+            logical_k_tokens=args.kv,
             out_scores=new_scores,
             out_ids=new_ids,
             out_route=new_route,

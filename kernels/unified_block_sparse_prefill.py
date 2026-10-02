@@ -422,6 +422,9 @@ class UnifiedC123AlignedChainPlan:
     fixed_done: torch.cuda.Event | None = None
     use_cutedsl_router: bool = False
     cutedsl_index_k: torch.Tensor | None = None
+    cutedsl_index_pages: torch.Tensor | None = None
+    cutedsl_logical_k_tokens: int | None = None
+    cutedsl_use_page_table: bool = False
     cutedsl_partition_scores: torch.Tensor | None = None
     cutedsl_partition_ids: torch.Tensor | None = None
 
@@ -486,7 +489,11 @@ class UnifiedC123AlignedChainPlan:
         if self.attention.fixed_only:
             return
         if self.use_cutedsl_router:
-            if self.cutedsl_index_k is None:
+            if (
+                self.cutedsl_index_k is None
+                or self.cutedsl_index_pages is None
+                or self.cutedsl_logical_k_tokens is None
+            ):
                 raise RuntimeError("CuTeDSL router workspace was not prepared")
             compact_ids = self.candidate_storage.view(torch.int32)
             if self.cutedsl_partition_scores is None:
@@ -494,6 +501,9 @@ class UnifiedC123AlignedChainPlan:
                     self.index_q,
                     self.cutedsl_index_k,
                     partition_blocks=self.candidate_partition_blocks,
+                    page_indices=self.cutedsl_index_pages,
+                    logical_k_tokens=self.cutedsl_logical_k_tokens,
+                    use_page_table=self.cutedsl_use_page_table,
                     out_compact_ids=compact_ids,
                 )
             else:
@@ -503,6 +513,9 @@ class UnifiedC123AlignedChainPlan:
                     self.index_q,
                     self.cutedsl_index_k,
                     partition_blocks=self.candidate_partition_blocks,
+                    page_indices=self.cutedsl_index_pages,
+                    logical_k_tokens=self.cutedsl_logical_k_tokens,
+                    use_page_table=self.cutedsl_use_page_table,
                     out_scores=self.cutedsl_partition_scores,
                     out_ids=self.cutedsl_partition_ids,
                 )
@@ -510,9 +523,12 @@ class UnifiedC123AlignedChainPlan:
                     self.cutedsl_partition_scores,
                     self.cutedsl_partition_ids,
                     q_offset=int(
-                        self.cutedsl_index_k.shape[0] - self.index_q.shape[0]
+                        self.cutedsl_logical_k_tokens - self.index_q.shape[0]
                     ),
-                    kv_blocks=int(self.cutedsl_index_k.shape[0] // SPEC.block_size),
+                    kv_blocks=int(
+                        (self.cutedsl_logical_k_tokens + SPEC.block_size - 1)
+                        // SPEC.block_size
+                    ),
                     out_compact_ids=compact_ids,
                 )
             return
@@ -1180,6 +1196,9 @@ def prepare_unified_c123_aligned_chain(
         dynamic_kernel_cfg=dynamic_kernel_cfg,
     )
     cutedsl_index_k = None
+    cutedsl_index_pages = None
+    cutedsl_logical_k_tokens = None
+    cutedsl_use_page_table = False
     cutedsl_partition_scores = None
     cutedsl_partition_ids = None
     if use_cutedsl_router and not attention.fixed_only:
@@ -1187,9 +1206,9 @@ def prepare_unified_c123_aligned_chain(
             raise ValueError("the CuTeDSL router requires SM103")
         if precision is not IndexerPrecision.BF16:
             raise ValueError("the CuTeDSL router currently supports BF16 only")
-        if batch != 1 or total_q % SPEC.block_size or skv % SPEC.block_size:
+        if batch != 1 or total_q % SPEC.block_size:
             raise ValueError(
-                "the CuTeDSL router requires block-aligned batch-one prefill"
+                "the CuTeDSL router requires block-aligned Q and batch-one prefill"
             )
         if index_k.ndim == 4:
             if tuple(index_k.shape[1:]) != (
@@ -1207,19 +1226,31 @@ def prepare_unified_c123_aligned_chain(
                     "CuTeDSL index_k must be [Skv,1,128] when unpaged"
                 )
             cutedsl_index_k = index_k
+            if skv % SPEC.block_size:
+                raise ValueError(
+                    "a partial logical K tail requires full paged Index K storage"
+                )
         else:
             raise ValueError("unsupported CuTeDSL index_k layout")
-        if int(cutedsl_index_k.shape[0]) != skv:
-            raise ValueError("CuTeDSL index_k storage must contain exactly Skv tokens")
-        expected_pages = torch.arange(
-            blocks,
-            dtype=torch.int32,
-            device=index_page_indices.device,
-        )
-        if not torch.equal(index_page_indices, expected_pages):
+        if int(cutedsl_index_k.shape[0]) % SPEC.block_size:
+            raise ValueError("CuTeDSL physical Index K storage must be page aligned")
+        physical_pages = int(cutedsl_index_k.shape[0]) // SPEC.block_size
+        if index_page_indices.ndim != 1 or index_page_indices.numel() < blocks:
             raise ValueError(
-                "the CuTeDSL router currently requires an identity index page table"
+                "batch-one CuTeDSL index_page_indices must cover all logical pages"
             )
+        cutedsl_index_pages = index_page_indices[:blocks].contiguous()
+        if bool(torch.any(cutedsl_index_pages < 0)) or bool(
+            torch.any(cutedsl_index_pages >= physical_pages)
+        ):
+            raise ValueError("index_page_indices references Index K out of range")
+        cutedsl_logical_k_tokens = skv
+        identity_pages = torch.arange(
+            blocks, dtype=torch.int32, device=index_page_indices.device
+        )
+        cutedsl_use_page_table = not torch.equal(
+            cutedsl_index_pages, identity_pages
+        )
         cutedsl_partitions = (blocks + partition_blocks - 1) // partition_blocks
         if cutedsl_partitions > 1:
             partition_shape = (
@@ -1279,6 +1310,9 @@ def prepare_unified_c123_aligned_chain(
         fixed_done=fixed_done,
         use_cutedsl_router=use_cutedsl_router,
         cutedsl_index_k=cutedsl_index_k,
+        cutedsl_index_pages=cutedsl_index_pages,
+        cutedsl_logical_k_tokens=cutedsl_logical_k_tokens,
+        cutedsl_use_page_table=cutedsl_use_page_table,
         cutedsl_partition_scores=cutedsl_partition_scores,
         cutedsl_partition_ids=cutedsl_partition_ids,
         dense_route_state=dense_route_state,
