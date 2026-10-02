@@ -1,5 +1,10 @@
 # CuTeDSL Opt2 Qualification Matrix (2026-10-02)
 
+> **Follow-up:** the 8K exceptions in this original matrix were subsequently
+> closed with a length-specialized low-resource Router and packed Fixed/Router
+> overlap. See
+> [`CUTEDSL_OPT2_SHORT_CONTEXT_20261002.md`](CUTEDSL_OPT2_SHORT_CONTEXT_20261002.md).
+
 This report qualifies commit `c9fbf75` against the opt3 oracle on one B300
 GPU. Every timed case first compares Dynamic Top-16, KV-centric CSR, output,
 and LSE. Performance uses CUDA events, 10 warmups, 21 alternating opt3/CuTeDSL

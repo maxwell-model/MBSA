@@ -62,6 +62,7 @@ class Bf16IndexerLocalTop16Sm103:
         logical_k_tail: bool = False,
         packed_requests: bool = False,
         packed_partitions: int = 1,
+        lean_pipeline: bool = False,
     ) -> None:
         if partition_blocks not in (1024, 2048, 4096, 8192):
             raise ValueError("partition_blocks must be 1024, 2048, 4096, or 8192")
@@ -72,6 +73,9 @@ class Bf16IndexerLocalTop16Sm103:
         self.logical_k_tail = bool(logical_k_tail)
         self.packed_requests = bool(packed_requests)
         self.packed_partitions = int(packed_partitions)
+        self.k_stages = 2 if lean_pipeline else 3
+        self.acc_stages = 2 if lean_pipeline else 3
+        self.tmem_columns = 256 if lean_pipeline else 512
 
     @cute.jit
     def __call__(
@@ -663,6 +667,7 @@ def bf16_indexer_local_top16(
         use_page_table = bool(use_page_table)
     _validate_inputs(q, k, page_indices, logical_k_tokens)
     partitions = (kv_blocks + partition_blocks - 1) // partition_blocks
+    lean_pipeline = logical_k_tokens <= 8192 and partitions == 1
     if out_route is not None and out_compact_ids is not None:
         raise ValueError("out_route and out_compact_ids are mutually exclusive")
     output_shape = (q.shape[1], partitions, q.shape[0], _TOPK)
@@ -764,6 +769,7 @@ def bf16_indexer_local_top16(
         compact_ids,
         use_page_table,
         logical_k_tail,
+        lean_pipeline,
     )
     compiled = _COMPILE_CACHE.get(key)
     if compiled is None:
@@ -774,6 +780,7 @@ def bf16_indexer_local_top16(
                 compact_ids=compact_ids,
                 use_page_table=use_page_table,
                 logical_k_tail=logical_k_tail,
+                lean_pipeline=lean_pipeline,
             ),
             *args,
             stream,
@@ -794,6 +801,7 @@ def bf16_indexer_packed_top16(
     out_compact_ids: torch.Tensor | None = None,
     out_scores: torch.Tensor | None = None,
     out_ids: torch.Tensor | None = None,
+    lean_pipeline: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run one Router launch over request-local tiles in a packed Q tensor."""
 
@@ -897,6 +905,7 @@ def bf16_indexer_packed_top16(
         int(partition_blocks),
         partitions,
         compact_ids,
+        bool(lean_pipeline),
     )
     compiled = _COMPILE_CACHE.get(key)
     if compiled is None:
@@ -908,6 +917,7 @@ def bf16_indexer_packed_top16(
                 use_page_table=True,
                 packed_requests=True,
                 packed_partitions=partitions,
+                lean_pipeline=lean_pipeline,
             ),
             *args,
             stream,

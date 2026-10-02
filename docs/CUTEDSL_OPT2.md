@@ -110,11 +110,14 @@ the independent K2 online-softmax merge.
 
 The final 8K--1M qualification uses a stricter 256 MiB flush and covers both
 uniform and packed variable-length workloads under identity/contiguous and
-permuted page tables. All 28 points are bitwise exact. The 8% performance gate
-passes from 32K through 1M, but uniform 8K and packed 8K contiguous remain
-short-context exceptions. See
+permuted page tables. All 28 points are bitwise exact. The initial matrix
+passed the 8% performance gate from 32K through 1M and identified two 8K
+exceptions. A subsequent length-specialized Router and packed-overlap policy
+closed those exceptions; all four 8K page-layout cases now pass the gate. See
 [`CUTEDSL_OPT2_MATRIX_20261002.md`](CUTEDSL_OPT2_MATRIX_20261002.md) for the
-complete methodology and results.
+original full matrix and
+[`CUTEDSL_OPT2_SHORT_CONTEXT_20261002.md`](CUTEDSL_OPT2_SHORT_CONTEXT_20261002.md)
+for the 8K follow-up.
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \

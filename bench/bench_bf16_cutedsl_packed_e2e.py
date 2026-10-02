@@ -45,6 +45,7 @@ def main() -> None:
     parser.add_argument("--shuffle-index-pages", action="store_true")
     parser.add_argument("--full-chain", action="store_true")
     parser.add_argument("--trace-stages", action="store_true")
+    parser.add_argument("--overlap-fixed-score", action="store_true")
     parser.add_argument("--warmups", type=int, default=0)
     parser.add_argument("--pairs", type=int, default=0)
     parser.add_argument("--stage-pairs", type=int, default=0)
@@ -119,7 +120,11 @@ def main() -> None:
         (len(q_lens), 0), dtype=torch.int32, device=device
     )
 
-    def prepare(*, use_cutedsl_router: bool):
+    def prepare(
+        *,
+        use_cutedsl_router: bool,
+        overlap_fixed_score: bool | None = False,
+    ):
         tile_plan = FwdTilePlan(
             dynamic_route=torch.empty(
                 (HKV, total_q, 16), dtype=torch.int32, device=device
@@ -146,7 +151,7 @@ def main() -> None:
             tile_plan=tile_plan,
             out=torch.empty_like(q),
             fuse_fixed_state_in_dynamic_combine=False,
-            overlap_fixed_score=False,
+            overlap_fixed_score=overlap_fixed_score,
             compact_batch1_schedule=False,
             dynamic_full_score_tiles=False,
             cu_seqlens_q=cu_q,
@@ -155,7 +160,10 @@ def main() -> None:
         )
 
     baseline = prepare(use_cutedsl_router=False)
-    candidate = prepare(use_cutedsl_router=True)
+    candidate = prepare(
+        use_cutedsl_router=True,
+        overlap_fixed_score=True if args.overlap_fixed_score else None,
+    )
     baseline.run_score()
     baseline.run_plan()
     candidate.run_score()
@@ -192,6 +200,8 @@ def main() -> None:
         "index_page_table": (
             "permuted" if args.shuffle_index_pages else "contiguous"
         ),
+        "opt3_overlap_fixed_score": baseline.overlap_fixed_score,
+        "cutedsl_overlap_fixed_score": candidate.overlap_fixed_score,
         "dynamic_route_exact_match": True,
         "csr_exact_match": True,
     }

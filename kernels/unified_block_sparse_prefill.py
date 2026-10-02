@@ -603,6 +603,7 @@ class UnifiedC123AlignedChainPlan:
                     tile_metadata=self.cutedsl_packed_tile_metadata,
                     partitions=1,
                     out_compact_ids=compact_ids,
+                    lean_pipeline=self.attention.max_seqlen_k <= 8192,
                 )
                 return
             if self.cutedsl_packed_requests:
@@ -1276,7 +1277,7 @@ def prepare_unified_c123_aligned_chain(
     indexer_precision: str | IndexerPrecision = IndexerPrecision.BF16,
     partial_dtype: torch.dtype = torch.bfloat16,
     fuse_fixed_state_in_dynamic_combine: bool = False,
-    overlap_fixed_score: bool = False,
+    overlap_fixed_score: bool | None = None,
     fixed_output_layout: BsaOutputLayout = BsaOutputLayout.SCATTERED,
     fixed_use_clc_scheduler: bool | None = None,
     compact_batch1_schedule: bool | None = None,
@@ -1297,11 +1298,6 @@ def prepare_unified_c123_aligned_chain(
     CSR execution. Packed prefix sums preserve request-local route IDs.
     Consumer buffers and native CSR scratch are prepared before ``run``.
     """
-    # Reject invalid ownership before any CUDA allocation or asynchronous CSR
-    # preparation.  A late exception can otherwise release in-flight
-    # temporaries before their stream completes.
-    if overlap_fixed_score and not fuse_fixed_state_in_dynamic_combine:
-        raise ValueError("fixed/Score overlap requires fused initial-state combine")
     total_q = int(q.shape[0])
     if (cu_seqlens_q is None) != (cu_seqlens_k is None):
         raise ValueError("cu_seqlens_q and cu_seqlens_k must be provided together")
@@ -1323,6 +1319,13 @@ def prepare_unified_c123_aligned_chain(
     batch = len(q_lens)
     max_seqlen_q = max(q_lens)
     skv = max(kv_lens)
+    if overlap_fixed_score is None:
+        # The low-resource 8K Router overlaps profitably with packed Fixed BSA.
+        # Above 8K, measurements show resource contention outweighs the saved
+        # launch gap, so packed callers default to sequential execution.
+        overlap_fixed_score = bool(
+            use_cutedsl_router and batch > 1 and skv <= 8192
+        )
     # The two-word schedule is a measured win from 32K onward.  Retain the
     # inherited six-word schedule below that boundary, where fixed launch and
     # setup costs dominate and the compact consumer is not consistently faster.
