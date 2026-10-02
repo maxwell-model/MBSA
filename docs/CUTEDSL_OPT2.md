@@ -108,6 +108,14 @@ measured 0.5990 ms versus 0.6441 ms for opt3, a 7.00% speedup. An independent
 include Router, unchanged packed CSR/LPT, Fixed BSA staging, Dynamic BSA, and
 the independent K2 online-softmax merge.
 
+The final 8K--1M qualification uses a stricter 256 MiB flush and covers both
+uniform and packed variable-length workloads under identity/contiguous and
+permuted page tables. All 28 points are bitwise exact. The 8% performance gate
+passes from 32K through 1M, but uniform 8K and packed 8K contiguous remain
+short-context exceptions. See
+[`CUTEDSL_OPT2_MATRIX_20261002.md`](CUTEDSL_OPT2_MATRIX_20261002.md) for the
+complete methodology and results.
+
 ```bash
 CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
   --full-chain
