@@ -24,10 +24,14 @@ standalone Router/CSR implementation, as the dominant midrange issue.
 
 ## Scheduling policy
 
-The qualified policy is length-specialized:
+The qualified policy is length- and layout-specialized:
 
-- 8K--64K retains Fixed-first publication, which gives the longer fixed path
-  launch priority before the short CuTeDSL Router launch;
+- 8K--64K retains Fixed-first publication for identity layouts, which gives
+  the longer fixed path launch priority before the short CuTeDSL Router
+  launch;
+- a non-identity 32K page table uses Score-first publication together with a
+  two-stage accumulator pipeline and 256 TMEM columns; K loading retains its
+  three-stage pipeline;
 - 128K--256K uses Score-first publication, reducing harmful interference on
   the longer Router critical path;
 - 512K and 1M retain their previously qualified Fixed-first path.
@@ -46,14 +50,17 @@ full qualification matrix rather than remeasured.
 
 | KV | CuTeDSL order | opt3 (ms) | CuTeDSL opt2 (ms) | Delta | Evidence |
 |---:|---|---:|---:|---:|---|
-| 32K | Fixed-first | 0.8970 | 0.9636 | +7.43% | retained 21-pair matrix |
+| 32K identity | Fixed-first | 0.8970 | 0.9636 | +7.43% | retained 21-pair matrix |
+| 32K permuted | Score-first | 0.8970 | 0.8769 | -2.24% | new 21-pair repeat |
 | 64K | Fixed-first | 1.1016 | 1.1223 | +1.88% | retained 21-pair matrix |
 | 128K | Score-first | 1.4061 | 1.4551 | +3.49% | new 21-pair run |
 | 256K | Score-first | 2.1987 | 2.1984 | -0.01% | new 21-pair run |
 
-For the new 128K and 256K runs, Dynamic Top-16 and KV-centric CSR are exactly
-equal to opt3, and output and LSE are bitwise equal. The implementation
-therefore remains within the 8% production target throughout 32K--256K.
+For the new 32K permuted, 128K, and 256K runs, Dynamic Top-16 and KV-centric
+CSR are exactly equal to opt3, and output and LSE are bitwise equal. A second
+independent 32K permuted run measured 0.8735 ms versus 0.8980 ms for opt3
+(-2.73%), confirming the result. The implementation therefore remains within
+the 8% production target throughout 32K--256K.
 
 ## Rejected variant
 
@@ -61,6 +68,13 @@ The 8K low-resource Router configuration was experimentally extended through
 64K. It increased Router latency by 1.08% at 32K and 5.65% at 64K, producing
 full-chain regressions of 8.34% and 8.08%, respectively. The production
 implementation consequently keeps this configuration restricted to 8K.
+
+Applying the reduced-accumulator, Score-first variant to the 32K identity
+layout was also rejected. Although one run measured a 1.95% speedup, two
+independent runs regressed by 9.22% and 7.98%, revealing a cross-stream
+scheduling bifurcation. The identity path therefore retains the stable
+Fixed-first configuration; the specialization is enabled only for the
+repeatably faster non-identity path.
 
 ## Command
 

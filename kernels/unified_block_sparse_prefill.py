@@ -754,9 +754,14 @@ class UnifiedC123AlignedChainPlan:
     @property
     def fixed_first_score_overlap(self) -> bool:
         """Whether Fixed BSA should be published before the Router launch."""
-        return self.use_cutedsl_router and not (
+        score_first = (
             131072 <= self.attention.max_seqlen_k <= 262144
+            or (
+                self.attention.max_seqlen_k == 32768
+                and self.cutedsl_use_page_table
+            )
         )
+        return self.use_cutedsl_router and not score_first
 
     def run(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self.attention.fixed_only:
