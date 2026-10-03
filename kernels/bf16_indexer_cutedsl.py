@@ -645,6 +645,7 @@ def bf16_indexer_local_top16(
     page_indices: torch.Tensor | None = None,
     logical_k_tokens: int | None = None,
     use_page_table: bool | None = None,
+    reduced_acc_pipeline: bool | None = None,
     out_scores: torch.Tensor | None = None,
     out_ids: torch.Tensor | None = None,
     out_route: torch.Tensor | None = None,
@@ -670,11 +671,14 @@ def bf16_indexer_local_top16(
     _validate_inputs(q, k, page_indices, logical_k_tokens)
     partitions = (kv_blocks + partition_blocks - 1) // partition_blocks
     lean_pipeline = logical_k_tokens <= 8192 and partitions == 1
-    reduced_acc_pipeline = (
-        logical_k_tokens == 32768
-        and partitions == 1
-        and use_page_table
-    )
+    if reduced_acc_pipeline is None:
+        reduced_acc_pipeline = (
+            logical_k_tokens == 32768
+            and partitions == 1
+            and use_page_table
+        )
+    else:
+        reduced_acc_pipeline = bool(reduced_acc_pipeline)
     if out_route is not None and out_compact_ids is not None:
         raise ValueError("out_route and out_compact_ids are mutually exclusive")
     output_shape = (q.shape[1], partitions, q.shape[0], _TOPK)
