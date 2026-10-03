@@ -751,6 +751,13 @@ class UnifiedC123AlignedChainPlan:
                 self.attention.tile_plan.dynamic_route, self.prefix_lens
             )
 
+    @property
+    def fixed_first_score_overlap(self) -> bool:
+        """Whether Fixed BSA should be published before the Router launch."""
+        return self.use_cutedsl_router and not (
+            131072 <= self.attention.max_seqlen_k <= 262144
+        )
+
     def run(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self.attention.fixed_only:
             return self.attention.run()
@@ -763,18 +770,21 @@ class UnifiedC123AlignedChainPlan:
                 raise RuntimeError("overlapped fixed attention is not prepared")
             current = torch.cuda.current_stream(self.index_q.device)
             self.inputs_ready.record(current)
-            if self.use_cutedsl_router:
+            if self.fixed_first_score_overlap:
                 # The specialized CuTeDSL Score kernel is short but launches
-                # enough CTAs to transiently occupy the device.  Give the
-                # longer fixed-support path launch priority, then use Score to
-                # fill the capacity it leaves available.
+                # enough CTAs to transiently occupy the device.  Fixed-first
+                # remains preferable at 8K--64K and at 512K+, while the
+                # measured 128K--256K regime benefits from Score-first.
                 self.fixed_stream.wait_event(self.inputs_ready)
                 with torch.cuda.stream(self.fixed_stream):
                     self.attention.run_fixed()
                     self.fixed_done.record(self.fixed_stream)
                 self.run_score()
             else:
-                # Preserve the measured opt3 launch order.
+                # Preserve the measured Score-first order for opt3 and for
+                # the CuTeDSL 128K--256K regime, where the Router critical
+                # path is long enough that Fixed-first scheduling increases
+                # resource contention without hiding more work.
                 self.run_score()
                 self.fixed_stream.wait_event(self.inputs_ready)
                 with torch.cuda.stream(self.fixed_stream):

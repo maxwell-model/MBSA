@@ -46,17 +46,30 @@ def main() -> None:
     def enqueue_prefix(plan: object) -> None:
         current = torch.cuda.current_stream(case.q.device)
         plan.inputs_ready.record(current)
-        plan.run_score()
-        plan.fixed_stream.wait_event(plan.inputs_ready)
-        with torch.cuda.stream(plan.fixed_stream):
-            plan.attention.run_fixed()
-            plan.fixed_done.record(plan.fixed_stream)
+        if plan.fixed_first_score_overlap:
+            plan.fixed_stream.wait_event(plan.inputs_ready)
+            with torch.cuda.stream(plan.fixed_stream):
+                plan.attention.run_fixed()
+                plan.fixed_done.record(plan.fixed_stream)
+            plan.run_score()
+        else:
+            plan.run_score()
+            plan.fixed_stream.wait_event(plan.inputs_ready)
+            with torch.cuda.stream(plan.fixed_stream):
+                plan.attention.run_fixed()
+                plan.fixed_done.record(plan.fixed_stream)
         plan.run_plan()
         current.wait_event(plan.fixed_done)
+
+    def enqueue_score_csr(plan: object) -> None:
+        plan.run_score()
+        plan.run_plan()
 
     stages: dict[str, Callable[[object], None]] = {
         "score": lambda plan: plan.run_score(),
         "csr_lpt": lambda plan: plan.run_plan(),
+        "score_csr": enqueue_score_csr,
+        "fixed": lambda plan: plan.attention.run_fixed(),
         "score_csr_fixed_overlap": enqueue_prefix,
         "dynamic_merge": lambda plan: (
             plan.attention.run_dynamic(),
@@ -76,6 +89,12 @@ def main() -> None:
         "sq": case.sq,
         "seed": args.seed,
         "l2_flush_mib": args.l2_flush_mib,
+        "opt3_launch_order": "score_first",
+        "cutedsl_launch_order": (
+            "fixed_first"
+            if plans["cutedsl"].fixed_first_score_overlap
+            else "score_first"
+        ),
     }
     for stage_name, enqueue in stages.items():
         samples = {name: [] for name in plans}

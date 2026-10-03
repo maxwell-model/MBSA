@@ -117,7 +117,10 @@ closed those exceptions; all four 8K page-layout cases now pass the gate. See
 [`CUTEDSL_OPT2_MATRIX_20261002.md`](CUTEDSL_OPT2_MATRIX_20261002.md) for the
 original full matrix and
 [`CUTEDSL_OPT2_SHORT_CONTEXT_20261002.md`](CUTEDSL_OPT2_SHORT_CONTEXT_20261002.md)
-for the 8K follow-up.
+for the 8K follow-up. The subsequent
+[`CUTEDSL_OPT2_MIDRANGE_20261003.md`](CUTEDSL_OPT2_MIDRANGE_20261003.md)
+attributes the remaining 32K--256K gap and qualifies a length-adaptive
+Fixed/Router launch order.
 
 ```bash
 CUDA_VISIBLE_DEVICES=7 python3 bench/bench_bf16_cutedsl_packed_e2e.py \
