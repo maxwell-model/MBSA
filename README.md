@@ -1,201 +1,192 @@
-# Flash BSA: Triton Baseline and CuTeDSL Optimized Path
+# Maxwell Block Sparse Attention (MBSA)
 
-![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-3776ab)
-![Triton](https://img.shields.io/badge/kernel-Triton-f47b60)
-![CuTeDSL](https://img.shields.io/badge/optimized-CuTeDSL-f47b60)
-![Precision](https://img.shields.io/badge/precision-BF16-f8b89d)
-![Status](https://img.shields.io/badge/status-correctness%20baseline-38251f)
+Maxwell Block Sparse Attention provides BF16 block-sparse prefill, organized after [MiniMax MSA](https://github.com/MiniMax-AI/MSA). The installable `mbsa` package provides a Python accuracy oracle, the retained Triton precision baseline, and the CuTe DSL performance runtime.
 
-Flash BSA is an independently authored Triton implementation of block-sparse
-grouped-query attention for long-context prefill. It uses a shared KV-block
-abstraction across routing, sparse execution, and state reduction while
-preserving exact dynamic Top-K semantics.
+![MBSA architecture](docs/images/maxwell-block-sparse-attention-structure.png)
 
-The repository contains both a PyTorch executable specification and a GPU
-baseline. The PyTorch path defines the numerical contract; the Triton path
-implements the router, fixed attention, KV-major dynamic attention, and
-online-softmax state merge.
+The Indexer selects remote KV blocks independently for four GQA groups. Two Attention paths consume the same main Q/K/V: **Fixed Attention** over Prefix-8 + SWA-8, and **Sparse Attention** over Remote Top-16. LSE-weighted state merging reconstructs attention over their union. Each KV block contains 128 tokens; main Q/KV have 32/4 heads and head dimension 128.
 
-The `aip/maxwell-v1-flash-bsa-cutedsl` branch additionally carries the
-`cutedsl-opt1` optimized path. It replaces Index Score generation and both
-levels of exact Top-K selection with CuTeDSL kernels while retaining the
-qualified Fixed BSA, Dynamic MSA, K2 combine, and CUDA CSR/LPT runtime.
-The original Triton baseline remains available as the numerical oracle and
-fallback implementation.
+| Backend | Purpose | Public entry point |
+|---|---|---|
+| Python / PyTorch | Accuracy oracle extracted from the specified upstream Hugging Face model | `reference_pipeline` |
+| Triton | Exact routing and fixed/dynamic attention for precision alignment | `triton_pipeline` |
+| CuTe DSL | BF16 routing, Fixed BSA, KV-centric Dynamic MSA and state combine on B300 (SM103) and H100 (SM90) | `prepare_cutedsl_pipeline(...).run()` |
 
-See [docs/CUTEDSL_OPT1.md](docs/CUTEDSL_OPT1.md) for its execution contract,
-validated performance, reproduction command, and source boundary.
-[docs/CUTEDSL_OPT2.md](docs/CUTEDSL_OPT2.md) tracks the production-coverage
-extension, beginning with non-identity Index-K page tables and partial KV
-tails.
+These are the three retained implementations. FP4/FP8 input kernels, standalone decode, TileLang and older experimental entry points have been removed. The BF16 CuTe runtime supports optional FP8 partial-output storage. Required BF16 MSA/Fixed BSA sources and the CUDA CSR metadata builder are bundled under `_vendor/`, with their licenses and notices preserved. [Architecture](docs/ARCHITECTURE.md), [Python source mapping](docs/MAXWELL_BLOCK_SPARSE_ATTENTION.md) and [provenance](PROVENANCE.md) describe the runtime and extraction boundaries.
 
-<p align="center">
-  <img src="docs/flash_bsa_execution.svg" width="100%" alt="Flash BSA Triton execution flow">
-</p>
+## Performance
 
-## Highlights
+![MBSA performance comparison](docs/images/maxwell-block-sparse-attention-performance.png)
 
-| Capability | Baseline implementation |
-|---|---|
-| Block-level routing | 128-token KV blocks |
-| Exact selection | Partition candidates followed by exact global Top-16 |
-| Fixed support | Position-derived Prefix-8 and Sliding-Window-8 |
-| Dynamic execution | KV-major route ordering with 16-query grouped CTAs |
-| Numerical reduction | FP32 online-softmax states and stable LSE merge |
-| Index layout | Four Index-Q heads sharing one Index-K head |
-| Source boundary | Independently authored PyTorch and Triton code only |
+The supplied comparison uses 32 Q heads, 4 KV heads and dimension 128. At 1M, it reports MBSA at 563.865 ms, MSA* at 503.610 ms and GQA at 6,093.54 ms: approximately 10.8× faster than GQA and 12% higher latency than MSA*. The figure is supplied measurement data; it is not a new benchmark run of this refactor. The retained benchmark commands below report their own workload, precision checks and timings.
 
-## Execution Design
+Historical measurements on one H100 80GB (SM90) in the `mbsa-h100:26.09` image, Q=8192, with the archived benchmark scripts ([details](docs/VALIDATION_H100.md)):
 
-### Exact hierarchical routing
+| KV | Triton e2e | CuTe DSL SM90 e2e | Speedup | CuTe DSL SM90, FP8 partials |
+|---:|---:|---:|---:|---:|
+| 8K | 5.36 ms | 1.20 ms | 4.5× | 1.04 ms |
+| 32K | 6.50 ms | 1.98 ms | 3.3× | 1.72 ms |
+| 128K | 10.30 ms | 3.06 ms | 3.4× | 2.78 ms |
+| 1M | 67.17 ms | 14.28 ms | 4.7× | 14.36 ms |
 
-The score kernel evaluates query-to-block relevance with 64-query tiles and
-16-block partitions. A block score is the maximum token score within that KV
-block. Prefix, local-window, and causally invisible blocks are masked before
-candidate publication. A second Triton kernel performs an exact global
-Top-16 merge, so the resulting route matches direct global selection.
+Whole-sequence prefill on the same H100, compared with dense causal GQA from FlashAttention-4 (SM90): MBSA takes 99.5 ms vs 841.5 ms at 256K (8.5×) and 1,000.8 ms vs 13,233.5 ms at 1M (13.2×).
 
-### Dual-path sparse attention
+![MBSA vs FA4 on H100](docs/images/h100-long-prefill.png)
 
-The fixed path derives Prefix-8 and Sliding-Window-8 directly from logical
-positions and maintains its online-softmax state in FP32. It does not
-materialize a fixed sparse route.
-
-The dynamic route is ordered by `(KV head, KV block)`. Consecutive queries
-selecting the same block are grouped in sets of 16, allowing one Triton CTA to
-reuse the corresponding K/V block across multiple queries and their eight GQA
-heads. Groups crossing a KV-row boundary use an exact fallback path.
-
-The final kernel combines the fixed state with all dynamic partial states in
-the log-sum-exp domain and writes the final output and LSE.
-
-> **Scope.** This baseline is a coordinated multi-kernel implementation. It
-> does not claim a single physical MegaKernel, TMA mainloops, persistent CTA
-> scheduling, or a fully Triton-native route sorter.
-
-## Supported Baseline Configuration
-
-| Parameter | Value |
-|---|---:|
-| Batch size | 1 |
-| Query / KV heads | 32 / 4 |
-| GQA group size | 8 |
-| Head dimension | 128 |
-| Query dtype | BF16 |
-| KV block size | 128 tokens |
-| Fixed blocks | Prefix-8 + Sliding-Window-8 |
-| Dynamic blocks | Exact Top-16 |
-| Validated query chunk | 8192 tokens |
-| Query offset | 128-token aligned |
+The CuTe timings flush L2 before each sample; the Triton script does not.
 
 ## Requirements
 
-- Python 3.10 or later
-- PyTorch with CUDA support
-- Triton 3.6 or a compatible release
-- A CUDA GPU with BF16 Tensor Core support
+| Backend | Requirements |
+|---|---|
+| Python reference | Python ≥ 3.10, PyTorch ≥ 2.5; CPU or CUDA |
+| Triton baseline | Linux CUDA host, BF16-capable GPU and Triton ≥ 3.6 |
+| CuTe DSL runtime (SM103) | Linux, NVIDIA B300 / SM103, CUDA toolkit with `nvcc`, CuTe DSL ≥ 4.4.1 |
+| CuTe DSL runtime (SM90) | Linux, NVIDIA H100 / SM90, CuTe DSL 4.8 (cu12 libraries), quack-kernels 0.6.2; no `nvcc` |
 
-No compiled extension or external attention package is required.
+CuTe DSL compiles attention kernels on first use. On SM103, PyTorch's CUDA extension loader compiles the bundled CSR builder, so the CUDA toolkit and its headers must be available. No recursive submodule checkout or separate MSA installation is needed. Importing `mbsa` leaves optional accelerator runtimes unloaded.
 
-The statement above applies to the independent Triton baseline. The
-`cutedsl-opt1` path requires NVIDIA CuTeDSL/CUTLASS and builds its vendored
-CUDA CSR/LPT extension at runtime.
+## Install
 
-## Python API
+```bash
+# CPU reference, or standard installation with pip install .
+pip install -e .
+
+# Linux CUDA development environment
+pip install -e '.[triton,cutedsl,dev]'
+```
+
+### H100 container
+
+`docker/Dockerfile.h100` builds `mbsa-h100:26.09` from `nvcr.io/nvidia/pytorch:26.09-py3`. The NGC CUDA 13.4 stack cannot run on R550 (CUDA 12.4) hosts, so the image switches PyTorch, Triton, cuda-python and the CuTe DSL runtime libraries to CUDA 12 and copies this repository to `/workspace/mbsa`.
+
+```bash
+docker build -f docker/Dockerfile.h100 -t mbsa-h100:26.09 .
+docker run --rm --gpus '"device=0"' --ipc=host mbsa-h100:26.09 \
+  python examples/prefill.py --backend cutedsl --check
+```
+
+## Usage
+
+All backends accept post-RoPE NHD tensors. Projection, normalization, RoPE and model KV-cache management belong to the caller.
 
 ```python
 import torch
+from mbsa import reference_pipeline
 
-from compass_bsa import gpu_pipeline_v2
-
-# index_q: [Q, 4, 128]
-# index_k: [KV, 1, 128]
-# q:       [Q, 32, 128]
-# k, v:    [KV, 4, 128]
-output, lse, route = gpu_pipeline_v2(index_q, index_k, q, k, v)
+# A small CPU example with the production head layout.
+q_tokens, kv_tokens = 32, 160
+index_q = torch.randn(q_tokens, 4, 128, dtype=torch.bfloat16)
+index_k = torch.randn(kv_tokens, 1, 128, dtype=torch.bfloat16)
+q = torch.randn(q_tokens, 32, 128, dtype=torch.bfloat16)
+k = torch.randn(kv_tokens, 4, 128, dtype=torch.bfloat16)
+v = torch.randn_like(k)
+output, lse, remote_route = reference_pipeline(index_q, index_k, q, k, v)
 ```
 
-`route` has shape `[4, Q, 16]`, `output` has shape `[Q, 32, 128]`, and
-`lse` has shape `[Q, 32]`.
+On CUDA, use the same tensors with the selected backend:
 
-## Correctness
+```python
+from mbsa import triton_pipeline, prepare_cutedsl_pipeline
 
-The GPU router is checked against a materialized dense block-score oracle.
-The attention output is checked against direct attention over the exact union
-of fixed and dynamically selected blocks.
+# Triton requires (kv_tokens - q_tokens) % 128 == 0.
+output, lse, remote_route = triton_pipeline(index_q, index_k, q, k, v)
 
-| Check | B300 result |
-|---|---:|
-| Top-K route indices | Exact match |
-| Router score max absolute error | `1.1444e-5` |
-| Output max absolute error | `4.8089e-4` |
-| LSE max absolute error | `9.5367e-7` |
+# Prepare once; run repeatedly with the same input tensor storage.
+pipeline = prepare_cutedsl_pipeline(index_q, index_k, q, k, v)
+output, lse, remote_route = pipeline.run()
+```
 
-## B300 Performance
+Partial storage defaults to BF16. Set `MBSA_FP8_PARTIAL_OUT=1` for FP8 E4M3FN, or pass `partial_dtype=torch.float8_e4m3fn` explicitly. Explicit dtype takes precedence over the environment. Q/K/V and the final output stay BF16; LSE and reduction stay FP32.
 
-BF16, Q=8192, Hq=32, Hkv=4, D=128, Prefix-8, Sliding-Window-8,
-Dynamic Top-16. Timings use CUDA events, three warmups, and the median of
-seven samples.
+The return shapes are output `[Q,32,128]`, natural-log LSE `[Q,32]` and remote block IDs `[4,Q,16]`. Unused route entries are `-1`; Prefix/SWA support is implicit. CuTe DSL supports logical KV tails, permuted Index-K pages and packed variable-length requests. See the [API contract](docs/ARCHITECTURE.md#5-api-contract) for paged layouts and request limits.
 
-| KV length | Router | KV order | Fixed | Dynamic | Merge | End-to-end |
-|---:|---:|---:|---:|---:|---:|---:|
-| 8K | 0.547 ms | 0.449 ms | 1.402 ms | 1.431 ms | 0.414 ms | **4.098 ms** |
-| 32K | 1.045 ms | 0.439 ms | 1.415 ms | 1.621 ms | 0.416 ms | **4.787 ms** |
-| 64K | 1.666 ms | 0.431 ms | 1.414 ms | 1.856 ms | 0.416 ms | **5.641 ms** |
-
-These measurements qualify the independent baseline; they are not presented
-as the final performance target.
-
-## Reproduce
-
-Run the source-boundary check and CPU semantic tests:
+Runnable examples:
 
 ```bash
-python3 tools/check_independence.py
-python3 -m unittest discover -s tests -v
+python examples/prefill.py --backend reference
+python examples/prefill.py --backend triton --check
+python examples/prefill.py --backend cutedsl --check
 ```
 
-Run correctness and latency gates on a CUDA host:
+## Verify
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-TRITON_CACHE_DIR=/tmp/flash_bsa/triton \
-python3 bench/bench_triton_baseline.py \
-  --revision 2 \
-  --kv 8192,32768,65536 \
-  --warmups 3 \
-  --samples 7
+python tests/test_precision.py
+ruff check python examples tests tools
+
+# Check wheel imports, the CPU oracle, bundled CUDA sources and notices.
+python -m build
+python tests/test_precision.py --wheel dist/mbsa-*.whl
 ```
 
-## Repository Layout
+CPU tests cover causal sparse GQA, negative index scores, per-group routes, cached offsets, KV tails, duplicate fixed support and the upstream BF16 probability cast. GPU tests compare the retained backends with the Python oracle and cover packed requests with permuted Index-K pages. CUDA tests skip explicitly on CPU hosts; CuTe tests require SM90 or SM103. The GitLab pipeline runs CPU, source and packaging checks; GPU qualification must run on a CUDA host.
+
+[vLLM integration qualification](docs/VLLM_INTEGRATION.md) records real chunked-prefill/decode shapes, model A/B, exact interleaved cache-layout tests and controlled container comparisons.
+
+[H100 validation](docs/VALIDATION_H100.md) records the SM90 image, 19 passing tests, the Triton/CuTe DSL comparison from 8K to 1M, the FA4 dense-GQA comparison, and the full BS32 operator matrix (19,968 records; every strict-gate failure is a near-tie route choice).
+
+[B300 validation](docs/VALIDATION_B300.md) records 13 passing tests, isolated wheel GPU checks, permuted K/V page coverage and measured Triton/CuTe DSL timings on the refactored package.
+
+[BS32 prefill qualification](docs/validation/bs32-refactor-20261004/index.html) records the final B300 run: 416 shapes × 48 options, all 19,968 strict HF gates passed, with zero remote-route differences. The native vLLM comparison retains 5,344 passes and 1,312 strict failures across 6,656 records. HF boundary refinement adds latency: for 385 same-GPU BF16 graph/warm unified pairs where both implementations pass, MBSA/native time-ratio median is 1.54. The report includes full samples, routing counts, source hashes and GPU-release evidence. Mixed decode requests reserve scheduler budget only; the operator executes prefill tokens.
+
+The [previous BS32 report](docs/validation/bs32-20261004/index.html) preserves the earlier failures and diagnostics. Local SM90/H100 updates made during B300 testing are retained and listed separately in the new source audit; this B300 run does not qualify them.
+
+## Accuracy and performance matrix
+
+The live test surface is two files and one shared configuration:
+
+- `tests/test_precision.py`: CPU/GPU contracts, source/wheel checks and full-query pinned-HF accuracy.
+- `tests/benchmark_performance.py`: eager/graph timings, full precision gates, native vLLM comparison and host GPU monitoring.
+- `tests/config.json`: prefill shapes, scheduler budgets, options, tolerances, sampling protocol and HF revision.
+
+```bash
+# Full-query accuracy; nonzero exit status preserves strict failures.
+python tests/test_precision.py --matrix --hf-source /path/to/modeling_compass_moe.py \
+  --output /tmp/mbsa-precision
+
+# Run sequentially on the same empty GPU. Decode only reserves scheduler tokens.
+python tests/benchmark_performance.py --hf-source /path/to/modeling_compass_moe.py \
+  --output /tmp/mbsa-performance
+python tests/benchmark_performance.py --backend native --partial-dtype bf16 \
+  --hf-source /path/to/modeling_compass_moe.py --output /tmp/mbsa-native
+python tests/benchmark_performance.py --backend native --partial-dtype fp8 \
+  --hf-source /path/to/modeling_compass_moe.py --output /tmp/mbsa-native
+```
+
+Use `--case-id` for a focused regression, and performance `--shard-index` / `--shards`
+for disjoint GPU shards. `--resume` preserves existing error records and continues unfinished
+options in a fresh worker after a poisoned CUDA context. Timings exclude preparation/capture
+and retain every sample. Historical experiments and executed source snapshots are archived in
+[legacy-test-sources.tar.gz](docs/validation/legacy-test-sources.tar.gz).
+
+## Layout
 
 ```text
-compass_bsa/
-  router.py       PyTorch exact-routing specification
-  attention.py    PyTorch attention and state-merge specification
-  csr.py          KV-centric CSR and work-order specification
-  gpu.py          Triton exact router and revision-1 reference
-  gpu_v2.py       Tiled fixed path, grouped dynamic path, and state merge
-  pipeline.py     End-to-end semantic pipeline
-bench/
-  bench_triton_baseline.py
-tests/
-  test_independent_v1.py
-tools/
-  check_independence.py
-docs/
-  CUTEDSL_OPT1.md
-  CUTEDSL_OPT2.md
-  TRITON_BASELINE.md
-  flash_bsa_execution.svg
+python/mbsa/
+  __init__.py                 lazy public exports
+  reference.py                pinned Python accuracy oracle
+  triton_backend.py           retained precision baseline
+  cutedsl_backend.py          reusable CuTe DSL public plan
+  vllm.py                     optional paged prefill/staged graph adapter
+  cute/
+    interface.py              routing, CSR, streams and state combine
+    plan.py                   tensor and schedule ABI
+    msa.py                    BF16 Dynamic MSA adapter
+    src/sm103/router.py       BF16 block scores and exact Top-16
+    src/sm103/merge.py        packed fixed/dynamic state merge
+    sm90.py                   H100 plan: buffers, compiled kernels, streams
+    src/sm90/router.py        WGMMA block scores and exact Top-16
+    src/sm90/schedule.py      device-only KV-centric work schedule
+    src/sm90/attention.py     Fixed, Dynamic and combine kernels
+  _vendor/                    attributed minimal MSA and Fixed BSA runtime
+examples/                     runnable prefill example
+tests/test_precision.py       accuracy, CPU/GPU contracts and package checks
+tests/benchmark_performance.py timings and native prefill comparison
+tests/config.json              shared selected shapes and gates
+tools/                        Chinese report renderer
+docker/                       H100 image and smc sync helper
+docs/                         architecture, source mapping and supplied figures
 ```
 
-See [docs/TRITON_BASELINE.md](docs/TRITON_BASELINE.md) for implementation
-details, workspace costs, known limitations, and the optimization roadmap.
-
-## Source Provenance
-
-The `compass_bsa/` Triton baseline remains independently authored. The
-optimized path includes attributed third-party MSA and BSA runtime sources;
-their original license, notice, and copyright files are preserved. See
-[PROVENANCE.md](PROVENANCE.md) for the precise source boundary.
+The Python oracle is pinned to upstream revision `d97a6c52967a5ed332e2196a5b985f0b4a475549`. Triton and CuTe DSL retain the MBSA runtime at revision `7490490`. [PROVENANCE.md](PROVENANCE.md) records source revisions, adaptations and third-party attribution.

@@ -1,0 +1,1 @@
+{"torch": "2.11.0+cu130", "triton": "3.6.0", "nvidia-cutlass-dsl": "4.6.0", "vllm": "0.26.0rc2.dev25+gc0a8b6c2b"}

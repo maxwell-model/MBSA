@@ -1,0 +1,102 @@
+INFO 10-04 03:56:23 [maxwell_v1_bsa.py:509] Maxwell V1 Unified prefill preallocated 1.49 GiB GPU (of which 80.9 MiB CSR and 4.0 MiB route) and 0.51 KiB pinned host memory (max_num_seqs=32, max_model_len=262144, max_q=8192).
+INFO 10-04 03:56:23 [maxwell_v1_bsa.py:1372] Maxwell V1 single prefill uses the aligned C123 chain.
+[aot_cache] Saved sparse_forward_sm100_csr_varlen_4wg_static_full_ldtm_q2_kv1_r192_192_80_48 -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/sparse_forward_sm100_csr_varlen_4wg_static_full_ldtm_q2_kv1_r192_192_80_48_6f97863f8c5d8caf.o (0.3s)
+[aot_cache] Saved combine -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/combine_101b328452cea04b.o (0.2s)
+{"case": 1, "of": 256, "id": "p1-d31-kv8192-balanced_full", "elapsed_s": 13.125928360037506}
+WARNING 10-04 03:56:36 [maxwell_v1_bsa.py:1011] Maxwell V1 unified prefill could not serve a batch (index plan max_qo_len=4 has no TileQ=256 Score owner); it ran on the legacy BSA path. 1 refusals so far.
+{"case": 2, "of": 256, "id": "p1-d31-kv8192-q1-boundary", "elapsed_s": 0.4897435319144279}
+{"case": 3, "of": 256, "id": "p1-d31-kv8192-q127-boundary", "elapsed_s": 0.325004676124081}
+{"case": 4, "of": 256, "id": "p1-d31-kv8192-q128-boundary", "elapsed_s": 0.2948744238819927}
+{"case": 5, "of": 256, "id": "p1-d31-kv8192-q129-boundary", "elapsed_s": 0.27960485708899796}
+{"case": 6, "of": 256, "id": "p1-d31-kv8192-q16-boundary", "elapsed_s": 0.4271500639151782}
+{"case": 7, "of": 256, "id": "p1-d31-kv8192-q17-boundary", "elapsed_s": 0.29561435990035534}
+{"case": 8, "of": 256, "id": "p1-d31-kv8192-q2-boundary", "elapsed_s": 0.2809958350844681}
+{"case": 9, "of": 256, "id": "p1-d31-kv8192-q255-boundary", "elapsed_s": 0.28541855700314045}
+{"case": 10, "of": 256, "id": "p1-d31-kv8192-q256-boundary", "elapsed_s": 0.3351395879872143}
+{"case": 11, "of": 256, "id": "p1-d31-kv8192-q257-boundary", "elapsed_s": 0.34120179689489305}
+{"case": 12, "of": 256, "id": "p1-d31-kv8192-q4095-boundary", "elapsed_s": 0.41679646517150104}
+{"case": 13, "of": 256, "id": "p1-d31-kv8192-q4096-boundary", "elapsed_s": 0.35462872101925313}
+{"case": 14, "of": 256, "id": "p1-d31-kv8192-q4097-boundary", "elapsed_s": 0.48934522923082113}
+{"case": 15, "of": 256, "id": "p1-d31-kv8192-q8159-boundary", "elapsed_s": 0.42608665814623237}
+{"case": 16, "of": 256, "id": "p1-d31-kv8192-q8160-boundary", "elapsed_s": 0.4247874631546438}
+{"case": 17, "of": 256, "id": "p1-d31-kv8192-q8161-boundary", "elapsed_s": 0.5380549500696361}
+{"case": 18, "of": 256, "id": "p1-d31-kv8192-skew_full", "elapsed_s": 0.40781346219591796}
+{"case": 19, "of": 256, "id": "uniform-q127-kv8192", "elapsed_s": 0.5167771889828146}
+{"case": 20, "of": 256, "id": "uniform-q128-kv8192", "elapsed_s": 0.5662153922021389}
+INFO 10-04 03:56:43 [maxwell_v1_bsa.py:1568] Maxwell V1 prefill uses one packed UnifiedC123AlignedChainPlan.
+[aot_cache] Saved sparse_forward_sm100_csr_varlen_4wg_static_generic_q2_kv1_r192_192_80_48 -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/sparse_forward_sm100_csr_varlen_4wg_static_generic_q2_kv1_r192_192_80_48_aa47671b09cf2dbf.o (0.2s)
+[aot_cache] Saved combine -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/combine_a7631cfdfee512c0.o (0.1s)
+{"case": 21, "of": 256, "id": "uniform-q129-kv8192", "elapsed_s": 6.618284393101931}
+{"case": 22, "of": 256, "id": "uniform-q16-kv8192", "elapsed_s": 0.5393807229120284}
+{"case": 23, "of": 256, "id": "uniform-q17-kv8192", "elapsed_s": 0.42976438300684094}
+{"case": 24, "of": 256, "id": "uniform-q255-kv8192", "elapsed_s": 0.9012990470509976}
+{"case": 25, "of": 256, "id": "uniform-q256-kv8192", "elapsed_s": 0.7887647009920329}
+{"case": 26, "of": 256, "id": "p2-d30-kv16384-balanced_full", "elapsed_s": 0.7644486620556563}
+{"case": 27, "of": 256, "id": "p2-d30-kv16384-skew_full", "elapsed_s": 0.5656303509604186}
+{"case": 28, "of": 256, "id": "uniform-q127-kv16384", "elapsed_s": 0.7208724559750408}
+{"case": 29, "of": 256, "id": "uniform-q128-kv16384", "elapsed_s": 0.6946577781345695}
+{"case": 30, "of": 256, "id": "uniform-q129-kv16384", "elapsed_s": 0.6051106168888509}
+{"case": 31, "of": 256, "id": "uniform-q16-kv16384", "elapsed_s": 0.4157610449474305}
+{"case": 32, "of": 256, "id": "uniform-q17-kv16384", "elapsed_s": 0.4593416410498321}
+{"case": 33, "of": 256, "id": "uniform-q255-kv16384", "elapsed_s": 0.8451504521071911}
+{"case": 34, "of": 256, "id": "uniform-q256-kv16384", "elapsed_s": 0.7033347599208355}
+{"case": 35, "of": 256, "id": "p3-d29-kv24576-balanced_full", "elapsed_s": 0.44366552284918725}
+{"case": 36, "of": 256, "id": "p3-d29-kv24576-skew_full", "elapsed_s": 0.45956156915053725}
+{"case": 37, "of": 256, "id": "uniform-q127-kv24576", "elapsed_s": 0.8670727759599686}
+{"case": 38, "of": 256, "id": "uniform-q128-kv24576", "elapsed_s": 0.6582308381330222}
+{"case": 39, "of": 256, "id": "uniform-q129-kv24576", "elapsed_s": 0.7369068509433419}
+{"case": 40, "of": 256, "id": "uniform-q16-kv24576", "elapsed_s": 0.45558157097548246}
+{"case": 41, "of": 256, "id": "uniform-q17-kv24576", "elapsed_s": 0.5498578620608896}
+{"case": 42, "of": 256, "id": "uniform-q255-kv24576", "elapsed_s": 0.7556465659290552}
+{"case": 43, "of": 256, "id": "uniform-q256-kv24576", "elapsed_s": 0.7282812229823321}
+{"case": 44, "of": 256, "id": "p4-d28-kv32768-balanced_full", "elapsed_s": 0.4292132609989494}
+{"case": 45, "of": 256, "id": "p4-d28-kv32768-skew_full", "elapsed_s": 0.4914937049616128}
+{"case": 46, "of": 256, "id": "uniform-q127-kv32768", "elapsed_s": 0.8319518868811429}
+{"case": 47, "of": 256, "id": "uniform-q128-kv32768", "elapsed_s": 0.7072079491335899}
+{"case": 48, "of": 256, "id": "uniform-q129-kv32768", "elapsed_s": 0.7213574009947479}
+{"case": 49, "of": 256, "id": "uniform-q16-kv32768", "elapsed_s": 0.4957347079180181}
+{"case": 50, "of": 256, "id": "uniform-q17-kv32768", "elapsed_s": 0.6255396089982241}
+{"case": 51, "of": 256, "id": "uniform-q255-kv32768", "elapsed_s": 0.7879839870147407}
+{"case": 52, "of": 256, "id": "uniform-q256-kv32768", "elapsed_s": 0.8489036429673433}
+[aot_cache] Saved combine -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/combine_dcd8039ea2a9714b.o (0.1s)
+{"case": 53, "of": 256, "id": "ragged-p1-d31-seed17-full-decode_first", "elapsed_s": 1.3305056248791516}
+{"case": 54, "of": 256, "id": "p5-d27-kv40960-balanced_full", "elapsed_s": 0.500585411908105}
+{"case": 55, "of": 256, "id": "p5-d27-kv40960-skew_full", "elapsed_s": 0.5955101090949029}
+{"case": 56, "of": 256, "id": "uniform-q127-kv40960", "elapsed_s": 1.0158833789173514}
+{"case": 57, "of": 256, "id": "uniform-q128-kv40960", "elapsed_s": 0.9333627338055521}
+{"case": 58, "of": 256, "id": "uniform-q129-kv40960", "elapsed_s": 0.9506593828555197}
+{"case": 59, "of": 256, "id": "uniform-q16-kv40960", "elapsed_s": 0.5341433498542756}
+{"case": 60, "of": 256, "id": "uniform-q17-kv40960", "elapsed_s": 0.5416956178378314}
+{"case": 61, "of": 256, "id": "uniform-q255-kv40960", "elapsed_s": 0.9277802410069853}
+{"case": 62, "of": 256, "id": "uniform-q256-kv40960", "elapsed_s": 0.8975109208840877}
+{"case": 63, "of": 256, "id": "p6-d26-kv49152-balanced_full", "elapsed_s": 0.5055236010812223}
+{"case": 64, "of": 256, "id": "p6-d26-kv49152-skew_full", "elapsed_s": 0.6350693900603801}
+{"case": 65, "of": 256, "id": "uniform-q127-kv49152", "elapsed_s": 1.0046803900040686}
+{"case": 66, "of": 256, "id": "uniform-q128-kv49152", "elapsed_s": 0.9735718420706689}
+{"case": 67, "of": 256, "id": "uniform-q129-kv49152", "elapsed_s": 0.9411524420138448}
+{"case": 68, "of": 256, "id": "uniform-q16-kv49152", "elapsed_s": 0.5670005280990154}
+{"case": 69, "of": 256, "id": "uniform-q17-kv49152", "elapsed_s": 0.578346709953621}
+{"case": 70, "of": 256, "id": "uniform-q255-kv49152", "elapsed_s": 1.0511554961558431}
+{"case": 71, "of": 256, "id": "uniform-q256-kv49152", "elapsed_s": 1.071940443944186}
+{"case": 72, "of": 256, "id": "p7-d25-kv57344-balanced_full", "elapsed_s": 0.5334715500939637}
+{"case": 73, "of": 256, "id": "p7-d25-kv57344-skew_full", "elapsed_s": 0.6584279770031571}
+{"case": 74, "of": 256, "id": "uniform-q127-kv57344", "elapsed_s": 1.1286041231360286}
+{"case": 75, "of": 256, "id": "uniform-q128-kv57344", "elapsed_s": 0.9616255429573357}
+{"case": 76, "of": 256, "id": "uniform-q129-kv57344", "elapsed_s": 0.9540583319030702}
+{"case": 77, "of": 256, "id": "uniform-q16-kv57344", "elapsed_s": 0.6102836190257221}
+{"case": 78, "of": 256, "id": "uniform-q17-kv57344", "elapsed_s": 0.6748984870500863}
+{"case": 79, "of": 256, "id": "uniform-q255-kv57344", "elapsed_s": 0.9848554411437362}
+{"case": 80, "of": 256, "id": "uniform-q256-kv57344", "elapsed_s": 0.9700560728088021}
+Traceback (most recent call last):
+  File "/tmp/mbsa-bs32/source/benchmarks/bench_bs32_native.py", line 439, in <module>
+    main()
+  File "/tmp/mbsa-bs32/source/benchmarks/bench_bs32_native.py", line 421, in main
+    torch.cuda.empty_cache()
+  File "/usr/local/lib/python3.12/dist-packages/torch/cuda/memory.py", line 224, in empty_cache
+    torch._C._cuda_emptyCache()
+torch.AcceleratorError: CUDA error: an illegal memory access was encountered
+Search for `cudaErrorIllegalAddress' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+

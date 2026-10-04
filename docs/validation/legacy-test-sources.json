@@ -1,0 +1,142 @@
+{
+  "archive": "legacy-test-sources.tar.gz",
+  "sha256": "4bf8f5bb86e73f414bf5b799b99b18c920119cd8578878a65662c38d6f279117",
+  "members": {
+    "benchmarks/bench_bs32_matrix.py": {
+      "bytes": 24508,
+      "sha256": "cc1fd35ee9770fdba20c1fbb69c2aa708912c6ebcc18da64a59d82313800a86c"
+    },
+    "benchmarks/bench_bs32_native.py": {
+      "bytes": 17942,
+      "sha256": "6b684b998d1d24a2a8d06f690d68b069db90d6f61e7a29b8aab72c12b5c405b0"
+    },
+    "benchmarks/bench_cutedsl.py": {
+      "bytes": 5783,
+      "sha256": "758553ef1648024264e405a99d1b0272243561557ef273e6686fc1aec112cae9"
+    },
+    "benchmarks/bench_long_prefill.py": {
+      "bytes": 5306,
+      "sha256": "6cca54db60cf42ef06aac70ae21a2ef5a10bc4dc47574508f01b4a9fc169b96b"
+    },
+    "benchmarks/bench_triton_baseline.py": {
+      "bytes": 5770,
+      "sha256": "385235fbdcb645c921a69503c0cc9d07feaa45f05b1e77a9ae2cfd9b7310dfa2"
+    },
+    "benchmarks/bench_vllm_decode.py": {
+      "bytes": 8727,
+      "sha256": "1f56e684766a23215976df62a9e91b5b3029952e0c9a46f03a3fc0a37d7fd379"
+    },
+    "benchmarks/bench_vllm_replay.py": {
+      "bytes": 12313,
+      "sha256": "74818dec701c97d09509616ae75cacf134d174be5ca69b3f1d28e294c06883dd"
+    },
+    "benchmarks/configs/bs32_8k_256k.json": {
+      "bytes": 9064,
+      "sha256": "1b6b5f21fe8b2ca6999529d992da0cf60bf602f8540f3483b6f04b1059e3979e"
+    },
+    "benchmarks/configs/bs32_8k_256k_uniform.csv": {
+      "bytes": 378643,
+      "sha256": "3bd6c4f0e89f0886b3906c2c1e72b084429d1c0a5c108c58eaf9c71733f6a80f"
+    },
+    "benchmarks/configs/bs32_mixed_varlen.jsonl": {
+      "bytes": 4397292,
+      "sha256": "b40f3a1790c1c0608d7b93188d66255f4e4a45d579765028d854351a046dcb0f"
+    },
+    "benchmarks/diagnose_bs32_routes.py": {
+      "bytes": 8421,
+      "sha256": "b8fea7fbe1b724bfd85c583b64cdf6e6dd08eca3e1d9ff9de0a6a70c55510e29"
+    },
+    "tools/aggregate_real_routes.py": {
+      "bytes": 4075,
+      "sha256": "ce2dc7c52339163d6a7f7897d6c57b6c1e94fc0e78dc0cdb53b2cda96bab4ed3"
+    },
+    "tools/check_sources.py": {
+      "bytes": 3881,
+      "sha256": "f8cc34497cb163f250f8febb3ff44a85e7d80271592885a366e189709f1bb0c7"
+    },
+    "tools/check_vllm_divergence.py": {
+      "bytes": 4853,
+      "sha256": "65d4fdb40af863c13e0c4d29ecca53bf35b498a7b4abbbee7bb1991d4a7f9f8d"
+    },
+    "tools/check_wheel.py": {
+      "bytes": 2391,
+      "sha256": "64fa600b5cca779fdbed004e10f056a2155e60f48bad6eb40ec04ecbc3946683"
+    },
+    "tools/generate_attention_diagram.py": {
+      "bytes": 23304,
+      "sha256": "f99df42f2ce83e223b225e355554626d10b9d26960aaadada783cd67d93269d2"
+    },
+    "tools/monitor_bs32_gpu.py": {
+      "bytes": 2722,
+      "sha256": "3058c75d274d47117812a7e018d15f2c7d45c3c5b3ac5440ef575ecd861c29ff"
+    },
+    "tools/plot_long_prefill.py": {
+      "bytes": 2795,
+      "sha256": "a2e2e4a1d15742a9a278965cfb6ff80ce256fbb726a43b5a67c471ec111d8acc"
+    },
+    "tools/render_bs32_report.py": {
+      "bytes": 48280,
+      "sha256": "09cfa6f4d9589a90dde5dde6bed9ed747ccd5af076aac34fee397551ecb2aa67"
+    },
+    "tools/run_bs32_native.py": {
+      "bytes": 3392,
+      "sha256": "4aad0752ee7a7afac82a1b4361f0ebf2d74c562e0e834af0cb6d1c0717beb9d0"
+    },
+    "tools/summarize_bs32_matrix.py": {
+      "bytes": 5267,
+      "sha256": "a51a5e35da550a9104a507b17b8e441a35fe1f17c758b41ed571157d40653f8d"
+    },
+    "tools/trace_vllm_attention.py": {
+      "bytes": 24084,
+      "sha256": "9179fd93086612afd22cd56076bf126ebb076be19e46e2b6711e064e78823d93"
+    },
+    "tests/test_reference.py": {
+      "bytes": 4927,
+      "sha256": "2e8e2ce3604c345fc6f85d46406ae72688d4a18dc7370beb4decba855f0896a4"
+    },
+    "tests/test_package.py": {
+      "bytes": 3840,
+      "sha256": "366cc1dfe67eddca2db56899283383f724a6a4e9d6f107afe2b6ab5c91bc1f2d"
+    },
+    "tests/__init__.py": {
+      "bytes": 44,
+      "sha256": "bc92806bcd8c4d6bfcb68cf2e18ff6b7e56a7943b6837b4930da4488392b6cd6"
+    },
+    "tests/test_backends.py": {
+      "bytes": 13999,
+      "sha256": "d4db76be1d00a35daf2102ef567d273d108f5021a24ee6876ae0bb018a5f61fb"
+    },
+    "docs/validation/b300-20261003/installed-gpu-check.py": {
+      "bytes": 1406,
+      "sha256": "b642b28afa30f257d0b49c91dfe47d8b10e124693a884dd3ed97cd50fa5518b1"
+    },
+    "docs/validation/bs32-20261004/evidence/gpu1/bench_bs32_matrix.py": {
+      "bytes": 24510,
+      "sha256": "4eade45a4d9e3808762e8851c1d707867cbea898eda39f41a292359702947872"
+    },
+    "docs/validation/bs32-20261004/evidence/gpu1/bench_bs32_native.py": {
+      "bytes": 17929,
+      "sha256": "a1a19ccf899a0c2a9d3ccc8eaeb31cdb18dd06e80f71040f59bb8148d84a0eb3"
+    },
+    "docs/validation/bs32-20261004/evidence/gpu1/run_bs32_native.py": {
+      "bytes": 3392,
+      "sha256": "4aad0752ee7a7afac82a1b4361f0ebf2d74c562e0e834af0cb6d1c0717beb9d0"
+    },
+    "docs/validation/bs32-20261004/evidence/gpu1/diagnose_bs32_routes.py": {
+      "bytes": 8169,
+      "sha256": "a8cdfa936d85a03980a2cb375ef29ee91e2afe492d0fdcb4d16c964780e61205"
+    },
+    "docs/validation/bs32-20261004/evidence/gpu6/bench_bs32_matrix.py": {
+      "bytes": 24510,
+      "sha256": "4eade45a4d9e3808762e8851c1d707867cbea898eda39f41a292359702947872"
+    },
+    "docs/validation/bs32-20261004/evidence/gpu6/bench_bs32_native.py": {
+      "bytes": 17929,
+      "sha256": "a1a19ccf899a0c2a9d3ccc8eaeb31cdb18dd06e80f71040f59bb8148d84a0eb3"
+    },
+    "docs/validation/bs32-20261004/evidence/gpu6/diagnose_bs32_routes.py": {
+      "bytes": 8169,
+      "sha256": "a8cdfa936d85a03980a2cb375ef29ee91e2afe492d0fdcb4d16c964780e61205"
+    }
+  }
+}

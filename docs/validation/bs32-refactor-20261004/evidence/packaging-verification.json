@@ -1,0 +1,11 @@
+{
+  "wheel_sha256": "717455c7a76296944f754539964ce99494dccfea7ddfd2af20080155745b44e5",
+  "runtime_python_files": 74,
+  "wheel_runtime_exactly_matches_gpu_tested_snapshot": true,
+  "cpu_tests": 24,
+  "cpu_skipped": 13,
+  "gpu_tests": 24,
+  "gpu_skipped": 0,
+  "lint": "passed",
+  "source_whitespace": "passed; generated raw validation artifacts retain original whitespace"
+}

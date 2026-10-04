@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mbsa"
+version = "0.1.0"
+description = "Maxwell Block Sparse Attention: Python oracle, Triton precision baseline, BF16 CuTe DSL runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.5"]
+
+[project.optional-dependencies]
+triton = ["triton>=3.6; sys_platform == 'linux'"]
+cutedsl = ["nvidia-cutlass-dsl>=4.4.1", "cuda-python", "apache-tvm-ffi", "quack-kernels>=0.2.10", "ninja"]
+dev = ["build>=1.2", "ruff>=0.9", "matplotlib>=3.9"]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.setuptools.package-data]
+mbsa = ["_vendor/**/LICENSE", "_vendor/**/NOTICE", "_vendor/**/*.md", "_vendor/**/*.cu", "_vendor/**/*.txt"]
+
+[tool.ruff.lint]
+select = ["F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Preserve attributed kernel bodies; unused DSL expressions may be intentional.
+"python/mbsa/_vendor/**" = ["F401", "F841"]
+"python/mbsa/cute/src/sm103/router.py" = ["F841"]

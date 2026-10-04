@@ -1,0 +1,14 @@
+{
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "compute_capability": [
+    9,
+    0
+  ],
+  "driver": "550.90.07",
+  "torch": "2.9.1+cu126",
+  "torch_cuda": "12.6",
+  "triton": "3.5.1",
+  "nvidia-cutlass-dsl": "4.8.0.dev0",
+  "quack-kernels": "0.6.2",
+  "cuda-python": "12.9.7"
+}

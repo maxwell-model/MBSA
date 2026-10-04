@@ -1,0 +1,18 @@
+[
+  {
+    "attempt": 1,
+    "exit_code": 1,
+    "recorded_before": 0,
+    "recorded_after": 648,
+    "planned": 2048,
+    "log": "recovery-fp8-001.log"
+  },
+  {
+    "attempt": 2,
+    "exit_code": 0,
+    "recorded_before": 648,
+    "recorded_after": 2048,
+    "planned": 2048,
+    "log": "recovery-fp8-002.log"
+  }
+]

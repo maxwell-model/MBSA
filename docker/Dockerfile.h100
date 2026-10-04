@@ -1,0 +1,56 @@
+# MBSA H100 (SM90) image.
+#
+# The NGC 26.09 base ships a CUDA 13.4 user-space stack. Hosts running an
+# R550 (CUDA 12.4) driver cannot use it: CUDA 13 forward compatibility does
+# not support that branch (cudaGetDeviceCount -> error 803). This image keeps
+# the NGC base and installs a CUDA 12 user-space stack (PyTorch cu126, its
+# Triton, cuda-python 12 and the CuTe DSL cu12 libraries), which runs on any
+# R525+ driver. The base image's CuTe DSL 4.8 and nvcc are kept.
+#
+# Build from the repository root:
+#   docker build -f docker/Dockerfile.h100 -t mbsa-h100:26.09 .
+FROM nvcr.io/nvidia/pytorch:26.09-py3
+
+ENV PIP_CONSTRAINT= \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Drop the CUDA 13 forward-compat libcuda so the host driver is always used.
+RUN sed -i '\#/usr/local/cuda/compat#d' /etc/ld.so.conf.d/*.conf && ldconfig
+
+RUN pip uninstall -y torch torchvision torchaudio triton triton_kernels \
+        torch_tensorrt transformer_engine flash_attn apex 2>/dev/null || true && \
+    pip install --index-url https://download.pytorch.org/whl/cu126 \
+        --extra-index-url https://pypi.shopee.io/ \
+        "torch==2.9.1" && \
+    pip install "nvidia-cutlass-dsl[cu12]==4.8.0.dev0" cuda-python apache-tvm-ffi \
+        "quack-kernels>=0.2.10" ninja ruff build
+
+# CuTe DSL must load its CUDA 12 runtime: remove the cu13 libraries and the
+# CUDA 13 Python bindings, and pin quack to the release paired with the base.
+RUN pip uninstall -y nvidia-cutlass-dsl-libs-cu13 cupti-python 2>/dev/null || true && \
+    pip install "cuda-python>=12.6,<13" && \
+    pip install --no-deps "quack-kernels==0.6.2"
+
+# The NGC driver checks probe the CUDA 13 runtime and print a misleading
+# "unsupported driver" error on R550 hosts; replace them with a short note.
+RUN printf '#!/bin/bash\necho "MBSA H100 image: PyTorch, Triton and CuTe DSL use a CUDA 12 user-space stack (R525+ driver)."\n' \
+        > /opt/nvidia/entrypoint.d/52-gpu-driver-version-check.sh && \
+    printf '#!/bin/bash\n' > /opt/nvidia/entrypoint.d/51-gpu-sm-version-check.sh
+
+# The base image points Triton at the CUDA 13.4 ptxas/headers; cubins from
+# that ptxas crash the R550 driver on load. Use Triton's bundled 12.8 tools.
+ARG TRITON_NV=/usr/local/lib/python3.12/dist-packages/triton/backends/nvidia
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64 \
+    PYTHONPATH=/workspace/mbsa/python \
+    TRITON_PTXAS_PATH=${TRITON_NV}/bin/ptxas \
+    TRITON_CUOBJDUMP_PATH=${TRITON_NV}/bin/cuobjdump \
+    TRITON_NVDISASM_PATH=${TRITON_NV}/bin/nvdisasm \
+    TRITON_CUDACRT_PATH=${TRITON_NV}/include \
+    TRITON_CUDART_PATH=${TRITON_NV}/include \
+    TRITON_CUPTI_INCLUDE_PATH=${TRITON_NV}/include \
+    TRITON_CUPTI_LIB_PATH=${TRITON_NV}/lib/cupti
+
+WORKDIR /workspace/mbsa
+COPY . /workspace/mbsa
+RUN python -c "import mbsa, cutlass, quack, torch; print(torch.__version__, torch.version.cuda)"

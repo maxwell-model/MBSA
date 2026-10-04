@@ -1,0 +1,88 @@
+[aot_cache] Saved sparse_forward_sm100_csr_varlen_5wg_cpasync_bulk_stg_scattered_clc_full_ldtm_q2_kv2_r184_104_104_24_64 -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/sparse_forward_sm100_csr_varlen_5wg_cpasync_bulk_stg_scattered_clc_full_ldtm_q2_kv2_r184_104_104_24_64_68214cf277a1d98e.o (0.3s)
+[aot_cache] Saved combine -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/combine_76843d5af35e281b.o (0.2s)
+{
+  "q_lens": [
+    8192
+  ],
+  "kv_lens": [
+    32768
+  ],
+  "index_layout": "identity",
+  "l2_flush_mib": 256,
+  "precision_checks": [
+    {
+      "q_start": 0,
+      "queries": 16,
+      "output_max_abs": 0.00048828125,
+      "lse_max_abs": 1.9073486328125e-06
+    },
+    {
+      "q_start": 8176,
+      "queries": 16,
+      "output_max_abs": 0.00048828125,
+      "lse_max_abs": 9.5367431640625e-07
+    }
+  ],
+  "timings": {
+    "e2e": {
+      "median_ms": 1.0032960176467896,
+      "samples_ms": [
+        1.0916160345077515,
+        1.0178560018539429,
+        1.0032960176467896,
+        0.9943040013313293,
+        0.9881600141525269
+      ]
+    },
+    "router": {
+      "median_ms": 0.2099200040102005,
+      "samples_ms": [
+        0.22019200026988983,
+        0.22627200186252594,
+        0.2099200040102005,
+        0.2027519941329956,
+        0.20380799472332
+      ]
+    },
+    "csr_lpt": {
+      "median_ms": 0.06451199948787689,
+      "samples_ms": [
+        0.06851200014352798,
+        0.0644799992442131,
+        0.06656000018119812,
+        0.06451199948787689,
+        0.06451199948787689
+      ]
+    },
+    "fixed": {
+      "median_ms": 0.19990399479866028,
+      "samples_ms": [
+        0.19968000054359436,
+        0.20179200172424316,
+        0.19977599382400513,
+        0.19990399479866028,
+        0.20153599977493286
+      ]
+    },
+    "dynamic_and_combine": {
+      "median_ms": 0.5457919836044312,
+      "samples_ms": [
+        0.5457919836044312,
+        0.5519359707832336,
+        0.5437759757041931,
+        0.5426880121231079,
+        0.547872006893158
+      ]
+    },
+    "merge": {
+      "median_ms": 0.002687999978661537,
+      "samples_ms": [
+        0.002848000032827258,
+        0.0027520000003278255,
+        0.002687999978661537,
+        0.002687999978661537,
+        0.002687999978661537
+      ]
+    }
+  }
+}

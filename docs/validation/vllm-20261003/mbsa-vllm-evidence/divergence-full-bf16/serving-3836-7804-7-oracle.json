@@ -1,0 +1,172 @@
+{
+  "dump": "/tmp/mbsa-vllm-integration/divergence-full-bf16/serving-3836-7804-7.pt",
+  "request": [
+    3836,
+    7804
+  ],
+  "query_offset": 3968,
+  "query_count": 3836,
+  "mbsa_vs_oracle": {
+    "passed": true,
+    "max_abs_error": 0.03125,
+    "rms_error": 0.0023815601598471403,
+    "close_fraction": 1.0
+  },
+  "native_vs_oracle": {
+    "passed": false,
+    "max_abs_error": 0.7685546875,
+    "rms_error": 0.02845018357038498,
+    "close_fraction": 0.9209874272346497
+  },
+  "mbsa_vs_oracle_with_mbsa_route": {
+    "passed": true,
+    "max_abs_error": 0.03125,
+    "rms_error": 0.00238155503757298,
+    "close_fraction": 1.0
+  },
+  "native_vs_oracle_with_mbsa_route": {
+    "passed": false,
+    "max_abs_error": 0.7685546875,
+    "rms_error": 0.028450170531868935,
+    "close_fraction": 0.9209874868392944
+  },
+  "remote_route_set_match_fraction": 1.0,
+  "route_mismatches": [],
+  "native_remote_route_set_match_fraction": 0.03415015712380409,
+  "native_route_mismatches": [
+    {
+      "group": 0,
+      "query": 128,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        12
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    },
+    {
+      "group": 0,
+      "query": 129,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        12
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    },
+    {
+      "group": 0,
+      "query": 130,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        16
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    },
+    {
+      "group": 0,
+      "query": 131,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        12
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    },
+    {
+      "group": 0,
+      "query": 132,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        16
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    },
+    {
+      "group": 0,
+      "query": 133,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        12
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    },
+    {
+      "group": 0,
+      "query": 134,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        15
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    },
+    {
+      "group": 0,
+      "query": 135,
+      "native_added": [
+        24
+      ],
+      "native_omitted": [
+        15
+      ],
+      "added_scores": [
+        0.0
+      ],
+      "omitted_scores": [
+        0.0
+      ]
+    }
+  ],
+  "native_vs_oracle_with_native_route": {
+    "passed": true,
+    "max_abs_error": 0.03125,
+    "rms_error": 0.002270238474011421,
+    "close_fraction": 1.0
+  }
+}

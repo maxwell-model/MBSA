@@ -1,0 +1,57 @@
+
+=============
+== PyTorch ==
+=============
+
+NVIDIA Release 26.09 (build 453215200)
+PyTorch Version 2.14.0a0+b2c75dd
+Container image Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 Facebook Inc.
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+Copyright (c) 2015      Google Inc.
+Copyright (c) 2015      Yangqing Jia
+Copyright (c) 2013-2016 The Caffe contributors
+All rights reserved.
+
+Various files include modifications (c) NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+
+GOVERNING TERMS: The software and materials are governed by the NVIDIA Software License Agreement
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/)
+and the Product-Specific Terms for NVIDIA AI Products
+(found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+ERROR: This container was built for NVIDIA Driver Release 615.71 or later, but
+       version 550.90.07 was detected and compatibility mode is UNAVAILABLE.
+
+       [[System has unsupported display driver / cuda driver combination (CUDA_ERROR_SYSTEM_DRIVER_MISMATCH) cuInit()=803]]
+
+{
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "compute_capability": [
+    9,
+    0
+  ],
+  "driver": "550.90.07",
+  "torch": "2.9.1+cu126",
+  "torch_cuda": "12.6",
+  "triton": "3.5.1",
+  "nvidia-cutlass-dsl": "4.8.0.dev0",
+  "quack-kernels": "0.6.2",
+  "cuda-python": "12.9.7"
+}
+Ran 19 tests in 98.735s
+
+OK
+{"kv": 8192, "q": 8192, "router_ms": 0.6171200275421143, "schedule_ms": 0.29097598791122437, "fixed_ms": 1.6889280080795288, "dynamic_ms": 2.237152099609375, "merge_ms": 0.7085440158843994, "attention_ms": 4.613887786865234, "e2e_ms": 5.425343990325928}
+{"kv": 32768, "q": 8192, "router_ms": 1.2754240036010742, "schedule_ms": 0.3147200047969818, "fixed_ms": 1.7761919498443604, "dynamic_ms": 2.5463039875030518, "merge_ms": 0.690496027469635, "attention_ms": 4.972799777984619, "e2e_ms": 6.634367942810059}
+{"kv": 65536, "q": 8192, "router_ms": 2.4478399753570557, "schedule_ms": 0.2970240116119385, "fixed_ms": 1.7055360078811646, "dynamic_ms": 2.7937920093536377, "merge_ms": 0.705344021320343, "attention_ms": 5.139520168304443, "e2e_ms": 7.651872158050537}
+{"kv": 131072, "q": 8192, "router_ms": 5.666880130767822, "schedule_ms": 0.2969279885292053, "fixed_ms": 1.787392020225525, "dynamic_ms": 3.249056100845337, "merge_ms": 0.6870399713516235, "attention_ms": 5.712575912475586, "e2e_ms": 11.0033597946167}
+{"kv": 262144, "q": 8192, "router_ms": 11.752191543579102, "schedule_ms": 0.2990399897098541, "fixed_ms": 1.8022719621658325, "dynamic_ms": 4.151455879211426, "merge_ms": 0.692255973815918, "attention_ms": 8.720704078674316, "e2e_ms": 23.57107162475586}
+{"kv": 1048576, "q": 8192, "router_ms": 69.30774688720703, "schedule_ms": 0.37852799892425537, "fixed_ms": 2.1282880306243896, "dynamic_ms": 14.527359962463379, "merge_ms": 1.594208002090454, "attention_ms": 16.85923194885254, "e2e_ms": 103.05929565429688}
+VALIDATION_DONE

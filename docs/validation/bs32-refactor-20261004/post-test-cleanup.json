@@ -1,0 +1,44 @@
+{
+  "utc": "2026-10-04T07:41:45.903348+00:00",
+  "containers": [
+    {
+      "Name": "/mbsa-bs32-test-min",
+      "Id": "a015dbcfe30f970edfe9e77e38085d08b27b599eeb8bbe1f56b71ee54ed4c2e8",
+      "Image": "sha256:e820d2ce7eb7a48cb347d78f3ea043a4e4024151382809ad817b765658816345",
+      "State": {
+        "Status": "exited",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 0,
+        "ExitCode": 137,
+        "Error": "",
+        "StartedAt": "2026-10-04T06:32:46.327545448Z",
+        "FinishedAt": "2026-10-04T07:41:45.671442029Z"
+      }
+    },
+    {
+      "Name": "/mbsa-bs32-gpu6-min",
+      "Id": "7fe32e9bb7e6f0c699b91a205d6bde25055aa37959974b30ca6f4fe63d7352e2",
+      "Image": "sha256:e820d2ce7eb7a48cb347d78f3ea043a4e4024151382809ad817b765658816345",
+      "State": {
+        "Status": "exited",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 0,
+        "ExitCode": 137,
+        "Error": "",
+        "StartedAt": "2026-10-04T06:32:47.270706784Z",
+        "FinishedAt": "2026-10-04T07:41:45.669630838Z"
+      }
+    }
+  ],
+  "selected_gpu_processes": [],
+  "gpus_released": true,
+  "monitor_stop_file": "/tmp/mbsa-bs32-20261004-transfer/refine-monitor.stop"
+}

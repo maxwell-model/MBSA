@@ -1,2 +1,0 @@
-# Preserve the frozen formal result files byte-for-byte, including CRLF.
-reference_results/block_sparse/predelivery_freeze/*.csv binary

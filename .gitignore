@@ -29,4 +29,5 @@ profiles/
 .idea/
 *.swp
 .DS_Store
+._*
 tests/logs/

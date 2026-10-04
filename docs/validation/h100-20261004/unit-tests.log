@@ -1,0 +1,50 @@
+test_cutedsl (test_backends.BackendAlignment.test_cutedsl) ... /workspace/mbsa/python/mbsa/cute/src/sm90/attention.py:31: DeprecationWarning: cutlass.utils.LayoutEnum is deprecated; use cutlass.tensor_utils.LayoutEnum instead. It will be removed in a future release.
+  from cutlass.utils import LayoutEnum
+/usr/local/lib/python3.12/dist-packages/quack/copy_utils.py:11: DeprecationWarning: Arch from arch.py is deprecated. Use Arch from enums.py instead.
+  from cutlass.base_dsl.arch import Arch
+/usr/local/lib/python3.12/dist-packages/quack/copy_utils.py:15: DeprecationWarning: cutlass.utils.LayoutEnum is deprecated; use cutlass.tensor_utils.LayoutEnum instead. It will be removed in a future release.
+  from cutlass.utils import LayoutEnum, block_copy
+/usr/local/lib/python3.12/dist-packages/quack/copy_utils.py:560: DeprecationWarning: cutlass.utils.LayoutEnum is deprecated; use cutlass.tensor_utils.LayoutEnum instead. It will be removed in a future release.
+  layout_c: cutlass.utils.LayoutEnum,
+/usr/local/lib/python3.12/dist-packages/quack/reduce.py:10: DeprecationWarning: Arch from arch.py is deprecated. Use Arch from enums.py instead.
+  from cutlass.base_dsl.arch import Arch
+/usr/local/lib/python3.12/dist-packages/quack/rmsnorm.py:39: DeprecationWarning: Arch from arch.py is deprecated. Use Arch from enums.py instead.
+  from cutlass.base_dsl.arch import Arch
+/usr/local/lib/python3.12/dist-packages/quack/softmax.py:23: DeprecationWarning: Arch from arch.py is deprecated. Use Arch from enums.py instead.
+  from cutlass.base_dsl.arch import Arch
+/usr/local/lib/python3.12/dist-packages/quack/cross_entropy.py:26: DeprecationWarning: Arch from arch.py is deprecated. Use Arch from enums.py instead.
+  from cutlass.base_dsl.arch import Arch
+/usr/local/lib/python3.12/dist-packages/quack/rounding.py:22: DeprecationWarning: Arch from arch.py is deprecated. Use Arch from enums.py instead.
+  from cutlass.base_dsl.arch import Arch
+/usr/local/lib/python3.12/dist-packages/quack/sm90_utils.py:11: DeprecationWarning: cutlass.utils.LayoutEnum is deprecated; use cutlass.tensor_utils.LayoutEnum instead. It will be removed in a future release.
+  from cutlass.utils import LayoutEnum
+/workspace/mbsa/python/mbsa/cute/src/sm90/router.py:26: DeprecationWarning: cutlass.utils.LayoutEnum is deprecated; use cutlass.tensor_utils.LayoutEnum instead. It will be removed in a future release.
+  from cutlass.utils import LayoutEnum
+ok
+test_cutedsl_fp8_partial_storage_matches_reference (test_backends.BackendAlignment.test_cutedsl_fp8_partial_storage_matches_reference) ... ok
+test_cutedsl_packed_permuted_index_pages (test_backends.BackendAlignment.test_cutedsl_packed_permuted_index_pages) ... ok
+test_cutedsl_permuted_kv_pages_with_tail (test_backends.BackendAlignment.test_cutedsl_permuted_kv_pages_with_tail) ... ok
+test_cutedsl_rebind_refreshes_index_pages_and_fused_output (test_backends.BackendAlignment.test_cutedsl_rebind_refreshes_index_pages_and_fused_output)
+A reused plan must read the new layer and identity-to-permuted map. ... ok
+test_cutedsl_vllm_interleaved_cache_and_single_query_chunk (test_backends.BackendAlignment.test_cutedsl_vllm_interleaved_cache_and_single_query_chunk)
+Use the actual split/permuted cache strides, including a KV tail. ... ok
+test_triton (test_backends.BackendAlignment.test_triton) ... ok
+test_triton_rejects_unaligned_offset (test_backends.BackendAlignment.test_triton_rejects_unaligned_offset) ... ok
+test_vllm_adapter_reuses_packed_plan_with_new_layer_and_page_maps (test_backends.BackendAlignment.test_vllm_adapter_reuses_packed_plan_with_new_layer_and_page_maps)
+Packed routing and output ownership survive a real layer rebind. ... ok
+test_vllm_graph_adapter_replays_updated_queries_cache_and_page_maps (test_backends.BackendAlignment.test_vllm_graph_adapter_replays_updated_queries_cache_and_page_maps)
+Captured kernels must consume live values through stable staging. ... ok
+test_bundled_runtime_does_not_take_over_global_modules (test_package.ImportBoundaryTest.test_bundled_runtime_does_not_take_over_global_modules) ... ok
+test_cutedsl_rejects_cpu_before_loading_runtime (test_package.ImportBoundaryTest.test_cutedsl_rejects_cpu_before_loading_runtime) ... ok
+test_partial_precision_switch_and_explicit_override (test_package.ImportBoundaryTest.test_partial_precision_switch_and_explicit_override) ... ok
+test_public_import_is_lazy (test_package.ImportBoundaryTest.test_public_import_is_lazy) ... ok
+test_bf16_probability_cast_matches_upstream (test_reference.UpstreamReferenceTest.test_bf16_probability_cast_matches_upstream) ... ok
+test_fixed_prefix_local_support_has_no_duplicates (test_reference.UpstreamReferenceTest.test_fixed_prefix_local_support_has_no_duplicates) ... ok
+test_input_contract_rejects_group_specific_index_keys (test_reference.UpstreamReferenceTest.test_input_contract_rejects_group_specific_index_keys) ... ok
+test_partial_block_cached_chunk_matches_dense_masked_gqa (test_reference.UpstreamReferenceTest.test_partial_block_cached_chunk_matches_dense_masked_gqa) ... ok
+test_raw_negative_scores_select_distinct_group_routes (test_reference.UpstreamReferenceTest.test_raw_negative_scores_select_distinct_group_routes) ... ok
+
+----------------------------------------------------------------------
+Ran 19 tests in 99.797s
+
+OK

@@ -1,0 +1,2 @@
+{"exit_code": 0, "before": 0, "after": 9984, "planned": 9984, "log": "worker-mbsa-bf16-001.log"}
+{"records": 9984, "status": {"passed": 9984}}

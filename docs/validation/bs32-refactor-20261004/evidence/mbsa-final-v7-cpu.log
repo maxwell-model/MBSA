@@ -1,0 +1,34 @@
+test_cutedsl (__main__.BackendAlignment.test_cutedsl) ... skipped 'CUDA is required'
+test_cutedsl_fp8_partial_storage_matches_reference (__main__.BackendAlignment.test_cutedsl_fp8_partial_storage_matches_reference) ... skipped 'CUDA is required'
+test_cutedsl_packed_permuted_index_pages (__main__.BackendAlignment.test_cutedsl_packed_permuted_index_pages) ... skipped 'CUDA is required'
+test_cutedsl_permuted_kv_pages_with_tail (__main__.BackendAlignment.test_cutedsl_permuted_kv_pages_with_tail) ... skipped 'CUDA is required'
+test_cutedsl_rebind_refreshes_index_pages_and_fused_output (__main__.BackendAlignment.test_cutedsl_rebind_refreshes_index_pages_and_fused_output)
+A reused plan must read the new layer and identity-to-permuted map. ... skipped 'CUDA is required'
+test_cutedsl_vllm_interleaved_cache_and_single_query_chunk (__main__.BackendAlignment.test_cutedsl_vllm_interleaved_cache_and_single_query_chunk)
+Use the actual split/permuted cache strides, including a KV tail. ... skipped 'CUDA is required'
+test_triton (__main__.BackendAlignment.test_triton) ... skipped 'CUDA is required'
+test_triton_rejects_unaligned_offset (__main__.BackendAlignment.test_triton_rejects_unaligned_offset) ... skipped 'CUDA is required'
+test_vllm_adapter_reuses_packed_plan_with_new_layer_and_page_maps (__main__.BackendAlignment.test_vllm_adapter_reuses_packed_plan_with_new_layer_and_page_maps)
+Packed routing and output ownership survive a real layer rebind. ... skipped 'CUDA is required'
+test_vllm_graph_adapter_replays_updated_queries_cache_and_page_maps (__main__.BackendAlignment.test_vllm_graph_adapter_replays_updated_queries_cache_and_page_maps)
+Captured kernels must consume live values through stable staging. ... skipped 'CUDA is required'
+test_prefill_only_selected_matrix (__main__.ConfigurationContracts.test_prefill_only_selected_matrix) ... ok
+test_fp8_shape_sequence_capture_and_live_query_updates (__main__.FixedWindowRegression.test_fp8_shape_sequence_capture_and_live_query_updates) ... skipped 'CUDA is required'
+test_graph_capture_waits_for_queued_eager_work (__main__.FixedWindowRegression.test_graph_capture_waits_for_queued_eager_work) ... skipped 'CUDA is required'
+test_unaligned_prefix_does_not_include_old_swa_page (__main__.FixedWindowRegression.test_unaligned_prefix_does_not_include_old_swa_page) ... skipped 'CUDA is required'
+test_bundled_runtime_does_not_take_over_global_modules (__main__.ImportBoundaryTest.test_bundled_runtime_does_not_take_over_global_modules) ... ok
+test_cutedsl_rejects_cpu_before_loading_runtime (__main__.ImportBoundaryTest.test_cutedsl_rejects_cpu_before_loading_runtime) ... ok
+test_partial_precision_switch_and_explicit_override (__main__.ImportBoundaryTest.test_partial_precision_switch_and_explicit_override) ... ok
+test_public_import_is_lazy (__main__.ImportBoundaryTest.test_public_import_is_lazy) ... ok
+test_source_imports_licenses_and_document_links (__main__.SourcePackagingContracts.test_source_imports_licenses_and_document_links) ... ok
+test_bf16_probability_cast_matches_upstream (__main__.UpstreamReferenceTest.test_bf16_probability_cast_matches_upstream) ... ok
+test_fixed_prefix_local_support_has_no_duplicates (__main__.UpstreamReferenceTest.test_fixed_prefix_local_support_has_no_duplicates) ... ok
+test_input_contract_rejects_group_specific_index_keys (__main__.UpstreamReferenceTest.test_input_contract_rejects_group_specific_index_keys) ... ok
+test_partial_block_cached_chunk_matches_dense_masked_gqa (__main__.UpstreamReferenceTest.test_partial_block_cached_chunk_matches_dense_masked_gqa) ... ok
+test_raw_negative_scores_select_distinct_group_routes (__main__.UpstreamReferenceTest.test_raw_negative_scores_select_distinct_group_routes) ... ok
+
+----------------------------------------------------------------------
+Ran 24 tests in 3.338s
+
+OK (skipped=13)
+Source check passed: 74 Python modules; baseline isolated; runtime imports, licenses and document links present

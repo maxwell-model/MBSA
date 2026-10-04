@@ -1,0 +1,31 @@
+{
+  "dump": "/tmp/mbsa-vllm-integration/divergence-worst/serving-3701-11893-9.pt",
+  "request": [
+    3701,
+    11893
+  ],
+  "query_offset": 8432,
+  "query_count": 16,
+  "mbsa_vs_oracle": {
+    "max_abs_error": 0.046875,
+    "rms_error": 0.0024222566280514,
+    "close_fraction": 1.0
+  },
+  "native_vs_oracle": {
+    "max_abs_error": 0.6953125,
+    "rms_error": 0.036773018538951874,
+    "close_fraction": 0.865386962890625
+  },
+  "mbsa_vs_oracle_with_mbsa_route": {
+    "max_abs_error": 0.046875,
+    "rms_error": 0.0024222566280514,
+    "close_fraction": 1.0
+  },
+  "native_vs_oracle_with_mbsa_route": {
+    "max_abs_error": 0.6953125,
+    "rms_error": 0.036773018538951874,
+    "close_fraction": 0.865386962890625
+  },
+  "remote_route_set_match_fraction": 1.0,
+  "route_mismatches": []
+}

@@ -1,0 +1,9 @@
+[
+  {
+    "exit_code": 0,
+    "before": 0,
+    "after": 1664,
+    "planned": 1664,
+    "log": "worker-native-fp8-001.log"
+  }
+]

@@ -1,0 +1,773 @@
+{
+  "kind": "historical_real_layer_full_chunk_route_counts",
+  "scope": "2026-10-03 recorded four-layer chunks; not new BS32 timing samples",
+  "expected_route": "captured MBSA route previously verified equal to pinned HF-derived Python for all queries",
+  "totals": {
+    "bf16": {
+      "query_head_count": 120592,
+      "mismatched_query_heads": 118512,
+      "missing_blocks": 1291071,
+      "extra_blocks": 1291071,
+      "expected_valid_blocks": 1929472,
+      "intersection_blocks": 638401,
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16
+    },
+    "fp8": {
+      "query_head_count": 120592,
+      "mismatched_query_heads": 118513,
+      "missing_blocks": 1291716,
+      "extra_blocks": 1291716,
+      "expected_valid_blocks": 1929472,
+      "intersection_blocks": 637756,
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16
+    }
+  },
+  "records": [
+    {
+      "dtype": "bf16",
+      "capture": "serving-3701-11893-10.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 198707,
+      "extra_blocks": 198707,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 38157,
+      "missing_blocks_per_query_head_distribution": {
+        "11": 1454,
+        "12": 1931,
+        "14": 2573,
+        "13": 2385,
+        "10": 736,
+        "15": 2460,
+        "16": 2733,
+        "9": 359,
+        "8": 114,
+        "4": 2,
+        "6": 20,
+        "7": 35,
+        "5": 2
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.002057305071502924,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 1.4921875,
+        "rms_error": 0.043427351862192154,
+        "close_fraction": 0.8007630705833435
+      },
+      "capture_sha256": "a10ceec4644cca6817e645be1a8cacff64bf9ef739f775606cb888c60e32711a",
+      "verification_sha256": "5cb66fd008b76e9a89931f70552741f3efa9922fdb1f8bf4d964e7f2c90a305e"
+    },
+    {
+      "dtype": "bf16",
+      "capture": "serving-3701-11893-11.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 210972,
+      "extra_blocks": 210972,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 25892,
+      "missing_blocks_per_query_head_distribution": {
+        "15": 3017,
+        "16": 4915,
+        "14": 2450,
+        "13": 1853,
+        "11": 757,
+        "12": 1260,
+        "10": 358,
+        "9": 126,
+        "8": 54,
+        "7": 11,
+        "6": 3
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.0024291560985147953,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 1.3125,
+        "rms_error": 0.04702021926641464,
+        "close_fraction": 0.7936720848083496
+      },
+      "capture_sha256": "a8626a2609593ccb8a2182f989ce7ce3f951aca38a3497f05676182c00e07afd",
+      "verification_sha256": "3726eceddf3cd2d6fe567926094e0b3a9d955533b3ce60a0a233ca977e6b82d9"
+    },
+    {
+      "dtype": "bf16",
+      "capture": "serving-3701-11893-12.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 193846,
+      "extra_blocks": 193846,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 43018,
+      "missing_blocks_per_query_head_distribution": {
+        "15": 2314,
+        "16": 1431,
+        "14": 3043,
+        "10": 828,
+        "13": 2969,
+        "12": 2121,
+        "11": 1426,
+        "9": 378,
+        "8": 198,
+        "7": 63,
+        "6": 31,
+        "5": 2
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.00191213667858392,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.6015625,
+        "rms_error": 0.032888419926166534,
+        "close_fraction": 0.8789870738983154
+      },
+      "capture_sha256": "04b4b3896efb855944366244c62bd37fffbe281d9e2a88797fc1f51921132eda",
+      "verification_sha256": "e53a30d4266287d98d0adda3275fd10ac5933b144a189286866a8912dd46a3a4"
+    },
+    {
+      "dtype": "bf16",
+      "capture": "serving-3701-11893-9.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 200265,
+      "extra_blocks": 200265,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 36599,
+      "missing_blocks_per_query_head_distribution": {
+        "14": 3620,
+        "16": 1776,
+        "15": 3026,
+        "13": 2758,
+        "12": 1808,
+        "11": 907,
+        "9": 266,
+        "10": 408,
+        "6": 18,
+        "8": 157,
+        "7": 57,
+        "5": 3
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.0014245329657569528,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.69921875,
+        "rms_error": 0.023778505623340607,
+        "close_fraction": 0.9372870922088623
+      },
+      "capture_sha256": "8379d63b5a04d38ed8e1bf791433a7c08a06a0e1f363a3a3a2f79b7f336b74e8",
+      "verification_sha256": "521b8c2c556dbcd79e193476b933476a7846cfb8b59221b99d8d56251b94737e"
+    },
+    {
+      "dtype": "bf16",
+      "capture": "serving-3836-7804-5.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14824,
+      "missing_blocks": 138966,
+      "extra_blocks": 138966,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 106538,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 520,
+        "1": 534,
+        "2": 548,
+        "3": 567,
+        "4": 591,
+        "5": 616,
+        "6": 683,
+        "7": 841,
+        "8": 1068,
+        "9": 1185,
+        "10": 1374,
+        "11": 1632,
+        "12": 1525,
+        "13": 1517,
+        "14": 1193,
+        "15": 618,
+        "16": 332
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.001409840420819819,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.92578125,
+        "rms_error": 0.015951819717884064,
+        "close_fraction": 0.9750807881355286
+      },
+      "capture_sha256": "ab00790c034a0bddea3d9e31aca3edd0aa6ed05b9380ef7d76269557b2ee81f0",
+      "verification_sha256": "ef464faad6c0048d05c05bf319885108e4b604b9f13a1cc1071a299ef424a1a4"
+    },
+    {
+      "dtype": "bf16",
+      "capture": "serving-3836-7804-6.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14829,
+      "missing_blocks": 116701,
+      "extra_blocks": 116701,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 128803,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 515,
+        "1": 587,
+        "2": 638,
+        "3": 655,
+        "4": 935,
+        "5": 1133,
+        "6": 1158,
+        "7": 1329,
+        "8": 1553,
+        "9": 1561,
+        "10": 1584,
+        "11": 1407,
+        "12": 1074,
+        "13": 703,
+        "14": 336,
+        "15": 120,
+        "16": 56
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.002003754721954465,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 1.5234375,
+        "rms_error": 0.024780191481113434,
+        "close_fraction": 0.9410129189491272
+      },
+      "capture_sha256": "7c7a08834553f555a358d87615075b7fc407ce7512cd5cc558adc989542b42b5",
+      "verification_sha256": "30b692e8b1cf566168446a8a5e31a958aadcd92561acf91546ea373b5f2719a0"
+    },
+    {
+      "dtype": "bf16",
+      "capture": "serving-3836-7804-7.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14820,
+      "missing_blocks": 126246,
+      "extra_blocks": 126246,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 119258,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 524,
+        "1": 581,
+        "2": 652,
+        "3": 556,
+        "4": 710,
+        "5": 719,
+        "6": 965,
+        "7": 1366,
+        "8": 1538,
+        "9": 1551,
+        "10": 1498,
+        "11": 1363,
+        "12": 1009,
+        "13": 718,
+        "14": 823,
+        "15": 630,
+        "16": 141
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.0023815601598471403,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.7685546875,
+        "rms_error": 0.02845018357038498,
+        "close_fraction": 0.9209874272346497
+      },
+      "capture_sha256": "754330e4f255c076ac57d84e1d9f9235fe9ad6fe152c69a3a466831cf9be7114",
+      "verification_sha256": "2be1ea44ef468b05bbc95ef61ddb12d40fc843f8e0d1595ccabd2146572f9c0a"
+    },
+    {
+      "dtype": "bf16",
+      "capture": "serving-3836-7804-8.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14823,
+      "missing_blocks": 105368,
+      "extra_blocks": 105368,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 140136,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 521,
+        "1": 632,
+        "2": 678,
+        "3": 902,
+        "4": 1065,
+        "5": 1340,
+        "6": 1715,
+        "7": 1989,
+        "8": 1772,
+        "9": 1416,
+        "10": 1086,
+        "12": 546,
+        "11": 797,
+        "13": 364,
+        "14": 266,
+        "15": 134,
+        "16": 121
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.03125,
+        "rms_error": 0.0018620570190250874,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.70556640625,
+        "rms_error": 0.019751742482185364,
+        "close_fraction": 0.9627135396003723
+      },
+      "capture_sha256": "f816525a9cd0860765f9ea4438ba6f805a61423d64f599503173e05e341be1a9",
+      "verification_sha256": "251864d292ddd38106e4108cc382c3cba3fba3f55f26ba3764e2f1dbf70158bb"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3701-11893-10.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 198623,
+      "extra_blocks": 198623,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 38241,
+      "missing_blocks_per_query_head_distribution": {
+        "11": 1467,
+        "12": 1930,
+        "14": 2558,
+        "13": 2370,
+        "10": 754,
+        "15": 2473,
+        "16": 2723,
+        "9": 355,
+        "8": 116,
+        "4": 2,
+        "6": 18,
+        "7": 36,
+        "5": 2
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.09375,
+        "rms_error": 0.002409938955679536,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 1.515625,
+        "rms_error": 0.04346771910786629,
+        "close_fraction": 0.8008149266242981
+      },
+      "capture_sha256": "87831cdb9f79e6d8472dfd8165e157d522a742bb79b5aa9b4e72f061ccdb0d7a",
+      "verification_sha256": "7324a8d13dbff7548a49fa967a0e25e794923fed947264336c7fe935c3566dad"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3701-11893-11.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 211175,
+      "extra_blocks": 211175,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 25689,
+      "missing_blocks_per_query_head_distribution": {
+        "15": 3005,
+        "14": 2456,
+        "16": 4965,
+        "13": 1854,
+        "11": 761,
+        "12": 1223,
+        "10": 347,
+        "9": 131,
+        "8": 47,
+        "6": 3,
+        "7": 12
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.09375,
+        "rms_error": 0.0028921293560415506,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 1.3203125,
+        "rms_error": 0.047056134790182114,
+        "close_fraction": 0.7934839129447937
+      },
+      "capture_sha256": "30493b74e77d1fd8b8fa31cdbe0199e375b8ef0deee1365a84222ef437321b13",
+      "verification_sha256": "a46e744db377af66a17dcda768324910137d46ef82063413f94ae053bb5705dc"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3701-11893-12.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 193843,
+      "extra_blocks": 193843,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 43021,
+      "missing_blocks_per_query_head_distribution": {
+        "15": 2297,
+        "16": 1455,
+        "14": 3020,
+        "10": 837,
+        "13": 2987,
+        "12": 2124,
+        "11": 1400,
+        "9": 400,
+        "8": 186,
+        "7": 69,
+        "6": 23,
+        "5": 6
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.09375,
+        "rms_error": 0.002707540988922119,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.59765625,
+        "rms_error": 0.03292471170425415,
+        "close_fraction": 0.8789337277412415
+      },
+      "capture_sha256": "96c676186c131af0565c173311731086000bf588238c420fca653cc0d26703c9",
+      "verification_sha256": "916335011b696116506e78ab9d5f32ad840cdca9deee0d3ebe2f07061663a344"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3701-11893-9.pt",
+      "request": [
+        3701,
+        11893
+      ],
+      "query_head_count": 14804,
+      "mismatched_query_heads": 14804,
+      "missing_blocks": 200265,
+      "extra_blocks": 200265,
+      "expected_valid_blocks": 236864,
+      "intersection_blocks": 36599,
+      "missing_blocks_per_query_head_distribution": {
+        "14": 3620,
+        "16": 1776,
+        "15": 3026,
+        "13": 2758,
+        "12": 1808,
+        "11": 907,
+        "9": 266,
+        "10": 408,
+        "6": 18,
+        "8": 157,
+        "7": 57,
+        "5": 3
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.0625,
+        "rms_error": 0.0017919830279424787,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.6953125,
+        "rms_error": 0.023801816627383232,
+        "close_fraction": 0.9372108578681946
+      },
+      "capture_sha256": "ed09a7fed06ffc1de02e359cb6cbb1ab1f50df67ed6da2c3fbfb1ad60a8af89c",
+      "verification_sha256": "5db1e071c11a0b0dfb0bb1527c20df7b04455585004556ebeb5bf165759aad21"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3836-7804-5.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14824,
+      "missing_blocks": 138966,
+      "extra_blocks": 138966,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 106538,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 520,
+        "1": 534,
+        "2": 548,
+        "3": 567,
+        "4": 591,
+        "5": 616,
+        "6": 683,
+        "7": 841,
+        "8": 1068,
+        "9": 1185,
+        "10": 1374,
+        "11": 1632,
+        "12": 1525,
+        "13": 1517,
+        "14": 1193,
+        "15": 618,
+        "16": 332
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.046875,
+        "rms_error": 0.0018635535379871726,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.93359375,
+        "rms_error": 0.016010241582989693,
+        "close_fraction": 0.9750111103057861
+      },
+      "capture_sha256": "1d62e876a15467d39187d1c4081ba2de7e82a7d7926cc0e12e3998bfc52bb7c2",
+      "verification_sha256": "a528921b2bcc120ed1c2c109d01b823bcd3125698d7a1f2e91bc79a455954f5d"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3836-7804-6.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14829,
+      "missing_blocks": 116773,
+      "extra_blocks": 116773,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 128731,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 515,
+        "1": 584,
+        "2": 637,
+        "3": 663,
+        "4": 919,
+        "5": 1129,
+        "6": 1169,
+        "7": 1309,
+        "8": 1580,
+        "9": 1557,
+        "10": 1587,
+        "11": 1402,
+        "12": 1077,
+        "13": 701,
+        "14": 335,
+        "15": 124,
+        "16": 56
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.125,
+        "rms_error": 0.002470235573127866,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 1.53125,
+        "rms_error": 0.024830130860209465,
+        "close_fraction": 0.9410302042961121
+      },
+      "capture_sha256": "952c8df569b380cc84b5e0d9be016e1f6f4077ec7a29b710dd53cf6055c53637",
+      "verification_sha256": "7ef4648812cd8b6646bdb6354ddb5cd9f1c712b4d8cf26ac1a96923acee0f293"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3836-7804-7.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14822,
+      "missing_blocks": 126596,
+      "extra_blocks": 126596,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 118908,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 522,
+        "1": 579,
+        "2": 647,
+        "3": 552,
+        "4": 706,
+        "5": 710,
+        "6": 969,
+        "7": 1351,
+        "8": 1535,
+        "9": 1534,
+        "10": 1511,
+        "11": 1379,
+        "12": 1021,
+        "13": 717,
+        "14": 825,
+        "15": 642,
+        "16": 144
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.09375,
+        "rms_error": 0.0029258416034281254,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.7744140625,
+        "rms_error": 0.02856324426829815,
+        "close_fraction": 0.9206740856170654
+      },
+      "capture_sha256": "c7c6a64494c88771b534aaac2d25730ec9a711f3f29c4d1f8acef255e5cef225",
+      "verification_sha256": "0184c80917b79b89382ca54c7077143f1eb9ff91d0caccc246ad650c4f49a38a"
+    },
+    {
+      "dtype": "fp8",
+      "capture": "serving-3836-7804-8.pt",
+      "request": [
+        3836,
+        7804
+      ],
+      "query_head_count": 15344,
+      "mismatched_query_heads": 14822,
+      "missing_blocks": 105475,
+      "extra_blocks": 105475,
+      "expected_valid_blocks": 245504,
+      "intersection_blocks": 140029,
+      "missing_blocks_per_query_head_distribution": {
+        "0": 522,
+        "1": 626,
+        "2": 671,
+        "3": 913,
+        "4": 1065,
+        "5": 1311,
+        "6": 1726,
+        "7": 1997,
+        "8": 1754,
+        "9": 1437,
+        "10": 1104,
+        "12": 548,
+        "11": 782,
+        "13": 369,
+        "14": 268,
+        "15": 130,
+        "16": 121
+      },
+      "max_missing_blocks_per_query_head": 16,
+      "max_extra_blocks_per_query_head": 16,
+      "mbsa_vs_hf_derived_oracle": {
+        "passed": true,
+        "max_abs_error": 0.09375,
+        "rms_error": 0.002719282638281584,
+        "close_fraction": 1.0
+      },
+      "native_vs_hf_derived_oracle": {
+        "passed": false,
+        "max_abs_error": 0.70849609375,
+        "rms_error": 0.01983971893787384,
+        "close_fraction": 0.9627135992050171
+      },
+      "capture_sha256": "73d59c1948699cf406e8d4d63ffb5c8ca535217ee92d082ad89c224a8db6b7a4",
+      "verification_sha256": "4b155b282acf387ae4318f32d4bd9104a59676f8234b874404cf6ee66d45384f"
+    }
+  ]
+}

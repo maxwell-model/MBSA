@@ -1,0 +1,17 @@
+stages:
+  - test
+
+cpu-and-package:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+    - python -m pip install -e '.[dev]'
+    - ruff check python examples tests tools
+    - python tests/test_precision.py
+    - python examples/prefill.py --backend reference
+    - python -m build
+    - python tests/test_precision.py --wheel dist/mbsa-*.whl
+  artifacts:
+    paths:
+      - dist/
