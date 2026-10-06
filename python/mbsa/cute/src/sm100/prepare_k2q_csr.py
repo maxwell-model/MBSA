@@ -16,7 +16,7 @@ from typing import Optional
 
 import torch
 
-from mbsa.cute.src.sm100.prepare_scheduler import SparseAttentionSchedule, SPARSE_SCHEDULE_MODEL
+from .prepare_scheduler import SparseAttentionSchedule, SPARSE_SCHEDULE_MODEL
 
 
 _SUPPORTED_TOPK = (4, 8, 16, 32)
@@ -118,7 +118,7 @@ class SparseK2qCsrBuilderSm100:
 
     def _ensure_loaded(self) -> None:
         if self._run is None:
-            from mbsa.cute.src.sm100.build_k2q_csr import run_build_k2q_csr, run_build_k2q_csr_with_schedule, run_build_k2q_csr_with_schedule_from_local_top16
+            from .build_k2q_csr import run_build_k2q_csr, run_build_k2q_csr_with_schedule, run_build_k2q_csr_with_schedule_from_local_top16
             self._run = run_build_k2q_csr
             self._run_with_schedule = run_build_k2q_csr_with_schedule
             self._run_with_schedule_from_local_top16 = (

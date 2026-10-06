@@ -5,7 +5,7 @@ from collections import OrderedDict
 
 import torch
 
-from mbsa.api import prepare_cutedsl_pipeline
+from .api import prepare_cutedsl_pipeline
 
 
 class PagedPrefill:

@@ -19,9 +19,9 @@ from cutlass import Float32, Int32
 import torch
 import cuda.bindings.driver as cuda
 from cutlass.cute.runtime import from_dlpack
-from mbsa.cute.src.sm100.router import merge_native_top16
+from .router import merge_native_top16
 from cutlass.cute.nvgpu import tcgen05, cpasync
-from mbsa.cute.src.common import pipeline as common_pipeline
+from ..common import pipeline as common_pipeline
 
 
 class Mxfp6PageScoreSm103:

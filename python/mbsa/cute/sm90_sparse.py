@@ -21,14 +21,13 @@ the MBSA Dynamic path; no step synchronizes with the host except deriving
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from dataclasses import dataclass, field
 import math
 
 import torch
 from cutlass import Float32, Int32
 
-from .sm90 import _compile, _cute as _wrap, _signature, _stream
+from .sm90 import _compile, _cute as _wrap, _stream
 from .src.sm90.attention import CombineSm90, DynamicAttentionSm90
 from .src.sm90.schedule import CsrCountsSm90, CsrRelationsSm90, ScheduleScanSm90
 
@@ -39,21 +38,32 @@ HEAD_DIM = 128
 SUPPORTED_TOPK = (4, 8, 16, 32)
 SUPPORTED_GROUPS = (8,)
 PARTIAL_DTYPES = (torch.float32, torch.bfloat16, torch.float16, torch.float8_e4m3fn)
-_WORKSPACES: dict[tuple, dict] = {}
-_WRAPPERS: OrderedDict = OrderedDict()
-_MAX_WRAPPERS = 512
+
+
+def _leading_dim(t: torch.Tensor) -> int:
+    unit = [i for i, s in enumerate(t.stride()) if s == 1]
+    return unit[-1] if unit else t.dim() - 1
+
+
+def _layout_signature(*tensors: torch.Tensor) -> tuple:
+    """Compile key for dynamic-layout operands: everything a kernel bakes in.
+
+    Shapes and non-unit strides are runtime values, so each prefill geometry
+    reuses one compiled kernel instead of compiling its own.
+    """
+    return tuple(
+        (t.dtype, t.dim(), _leading_dim(t), tuple(s == 0 for s in t.stride()))
+        for t in tensors
+    )
 
 
 def _cute(t: torch.Tensor, align: int = 16):
-    """DLPack wrappers encode only pointer and layout; reuse them across calls."""
-    key = (t.data_ptr(), tuple(t.shape), t.stride(), t.dtype, t.device, align)
-    wrapper = _WRAPPERS.pop(key, None)
-    if wrapper is None:
-        wrapper = _wrap(t, align)
-        if len(_WRAPPERS) >= _MAX_WRAPPERS:
-            _WRAPPERS.popitem(last=False)
-    _WRAPPERS[key] = wrapper
-    return wrapper
+    """Wrap a tensor for a dynamic-layout launch.
+
+    Not cached: a DLPack wrapper owns a reference to its tensor, so a cache
+    keyed by pointer pins every per-call workspace and input it has seen.
+    """
+    return _wrap(t, align).mark_layout_dynamic(leading_dim=_leading_dim(t))
 
 
 def _row_coordinates(cu_seqlens_k: torch.Tensor, max_blocks: int, rows: int, block_size: int = BLOCK):
@@ -153,7 +163,9 @@ class SparseAttentionScheduleSm90:
 
 def _workspace(device, heads, total_q, topk, group, rows, partial_dtype, block_size=BLOCK, owner=None):
     key = (device, heads, total_q, topk, group, rows, partial_dtype, block_size)
-    cache = _WORKSPACES if owner is None else owner.state
+    # Without an owning schedule the workspace lives for this call only; a
+    # global cache keyed by geometry would grow with every new prefill shape.
+    cache = {} if owner is None else owner.state
     ws = cache.get(key)
     if ws is None:
         relations = heads * total_q * topk
@@ -399,22 +411,22 @@ def sparse_atten_func(
     )
     has_initial = initial_out is not None
     launches = (
-        (("msa-csr-counts",) + _signature(row_ptr, ws["counts"]), CsrCountsSm90, counts_args),
+        (("msa-csr-counts",) + _layout_signature(row_ptr, ws["counts"]), CsrCountsSm90, counts_args),
         (
-            ("scan", paged, blk_kv) + _signature(ws["counts"], ws["work"], request, table),
+            ("scan", paged, blk_kv) + _layout_signature(ws["counts"], ws["work"], request, table),
             lambda: ScheduleScanSm90(
                 work_queries=DynamicAttentionSm90.max_queries_per_work, paged=paged, block_size=blk_kv
             ),
             scan_args,
         ),
         (
-            ("msa-csr-relations", topK) + _signature(row_ptr, q_indices, ws["route"], cu_seqlens_q),
+            ("msa-csr-relations", topK) + _layout_signature(row_ptr, q_indices, ws["route"], cu_seqlens_q),
             lambda: CsrRelationsSm90(topk=topK),
             relation_args,
         ),
         (
             ("msa-dynamic", ctas, paged, group, topK, partial_dtype, blk_kv)
-            + _signature(q, k, v, ws["work"], ws["relations"], partial),
+            + _layout_signature(q, k, v, ws["work"], ws["relations"], partial),
             lambda: DynamicAttentionSm90(
                 ctas=ctas,
                 paged=paged,
@@ -429,7 +441,7 @@ def sparse_atten_func(
         ),
         (
             ("msa-combine", group, topK, has_initial, partial_dtype)
-            + _signature(initial_view, initial_lse_view, partial, output),
+            + _layout_signature(initial_view, initial_lse_view, partial, output),
             lambda: CombineSm90(fp8_partial=fp8, group=group, topk=topK, has_initial=has_initial),
             combine_args,
         ),
@@ -469,7 +481,7 @@ def sparse_atten_func(
             # temperature=1 fast path aliases the standard merged LSE.
             _, _, args = launches[-1]
             temp_combine = args[:-2] + (_cute(scratch_out), _cute(temperature_lse))
-            key = ("msa-temperature-combine", group, topK, partial_dtype) + _signature(partial, scratch_out)
+            key = ("msa-temperature-combine", group, topK, partial_dtype) + _layout_signature(partial, scratch_out)
             factory = lambda: CombineSm90(fp8_partial=fp8, group=group, topk=topK, has_initial=False)
             _compile(key, factory, temp_combine)(*temp_combine, stream)
         return output, lse, temperature_lse

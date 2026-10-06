@@ -25,7 +25,7 @@ from cutlass.cute import FastDivmodDivisor
 
 from quack import layout_utils
 
-from mbsa.cute.src.common import utils
+from . import utils
 
 
 def pack_gqa_layout(T, qhead_per_kvhead, nheads_kv, head_idx):

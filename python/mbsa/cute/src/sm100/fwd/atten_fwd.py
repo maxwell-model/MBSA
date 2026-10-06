@@ -28,20 +28,20 @@ from cutlass.cutlass_dsl import BaseDSL
 
 from quack import copy_utils
 
-from mbsa.cute.src.common.cute_dsl_utils import assume_tensor_aligned
-from mbsa.cute.src.common import utils
-from mbsa.cute.src.common import copy_utils as common_copy_utils
-from mbsa.cute.src.common import pipeline
-from mbsa.cute.src.common import mma_sm100_desc as sm100_desc
-from mbsa.cute.src.common import blackwell_helpers as sm100_helpers
-from mbsa.cute.src.common.softmax import SoftmaxSm100
-from mbsa.cute.src.common.named_barrier import NamedBarrierFwdSm100
-from mbsa.cute.src.common.mask import AttentionMask
-from mbsa.cute.src.common.seqlen_info import SeqlenInfoQK
-from mbsa.cute.src.sm100.fwd.config import Cfg, OutputLayout, OutputStore, QLoad
+from ...common.cute_dsl_utils import assume_tensor_aligned
+from ...common import utils
+from ...common import copy_utils as common_copy_utils
+from ...common import pipeline
+from ...common import mma_sm100_desc as sm100_desc
+from ...common import blackwell_helpers as sm100_helpers
+from ...common.softmax import SoftmaxSm100
+from ...common.named_barrier import NamedBarrierFwdSm100
+from ...common.mask import AttentionMask
+from ...common.seqlen_info import SeqlenInfoQK
+from .config import Cfg, OutputLayout, OutputStore, QLoad
 # Shared raw PTX helpers and layout conversions used by the lean kernel.
-from mbsa.cute.src.common.paged_kv import PagedKVManager
-from mbsa.cute.src.common.tma_utils import tma_gather4_cached, tma_gather4_prefetch, ragged_o_tma_coords, prefetch_tma_desc_raw, TMA_CACHE_EVICT_LAST, make_16x256b_tensor_mn_view, real_col_to_stg128_fake_col, real_col_to_stg128_fp8_fake_col, real_col_to_stg128_half_fake_col, stg128_half_fake_col_to_real_col, stg_128_cs, stg_128_bf16_cs, stg_128_f16_cs, stg_128_fp8_e4m3_cs, tma_tile_store_5d
+from ...common.paged_kv import PagedKVManager
+from ...common.tma_utils import tma_gather4_cached, tma_gather4_prefetch, ragged_o_tma_coords, prefetch_tma_desc_raw, TMA_CACHE_EVICT_LAST, make_16x256b_tensor_mn_view, real_col_to_stg128_fake_col, real_col_to_stg128_fp8_fake_col, real_col_to_stg128_half_fake_col, stg128_half_fake_col_to_real_col, stg_128_cs, stg_128_bf16_cs, stg_128_f16_cs, stg_128_fp8_e4m3_cs, tma_tile_store_5d
 
 
 @cute.jit

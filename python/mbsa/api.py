@@ -217,7 +217,7 @@ def _prepare_sm90(
         )
         padded[: index_k.shape[0]].copy_(index_k)
         index_k = padded
-    from mbsa.cute.sm90 import prepare_sm90_pipeline
+    from .cute.sm90 import prepare_sm90_pipeline
 
     plan = prepare_sm90_pipeline(
         index_q,
@@ -310,8 +310,8 @@ def prepare_cutedsl_pipeline(
     ):
         raise ValueError("each request requires 0 < Q <= 8192 and Q <= KV <= 1M")
     _load_runtime()
-    from mbsa.cute.prefill import prepare_pipeline
-    from mbsa.cute.plan import FwdTilePlan, PrefillPolicy
+    from .cute.prefill import prepare_pipeline
+    from .cute.plan import FwdTilePlan, PrefillPolicy
 
     request_blocks = tuple((n + 127) // 128 for n in kv_lens)
     if index_page_indices is None:

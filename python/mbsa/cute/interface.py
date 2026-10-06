@@ -31,12 +31,12 @@ import torch
 from cutlass import Float32, Int32
 from cutlass.cute.runtime import from_dlpack
 
-from mbsa.cute.src.sm100.fwd.combine import combine, combine_shuffled
-from mbsa.cute.src.sm100.fwd.atten_fwd import SparseAttentionForwardSm100
-from mbsa.cute.src.sm100.fwd.config import Cfg, MSA_OUTPUT_TILE_ROWS, OutputLayout, select_msa_cfg
-from mbsa.cute.src.sm100.prepare_scheduler import SparseAttentionSchedule, prepare_sparse_fwd_schedule_and_split, prepare_sparse_fwd_tma_tile_map
-from mbsa.cute.src.common.cute_dsl_utils import to_cute_tensor as to_cute_tensor_kvouter
-from mbsa.cute.src.common.tma_utils import create_q_gather4_tma_desc, create_ragged_o_tma_desc
+from .src.sm100.fwd.combine import combine, combine_shuffled
+from .src.sm100.fwd.atten_fwd import SparseAttentionForwardSm100
+from .src.sm100.fwd.config import Cfg, MSA_OUTPUT_TILE_ROWS, OutputLayout, select_msa_cfg
+from .src.sm100.prepare_scheduler import SparseAttentionSchedule, prepare_sparse_fwd_schedule_and_split, prepare_sparse_fwd_tma_tile_map
+from .src.common.cute_dsl_utils import to_cute_tensor as to_cute_tensor_kvouter
+from .src.common.tma_utils import create_q_gather4_tma_desc, create_ragged_o_tma_desc
 
 _compile_cache: dict = {}
 _ragged_o_tma_desc_cache: dict = {}
@@ -71,6 +71,13 @@ class SparseForwardPhase(str, Enum):
     FULL = "full"
     MSA = "msa"
     COMBINE = "combine"
+
+
+def _to_cute_int32_metadata(t: torch.Tensor):
+    # Per-request metadata is read with scalar loads, and callers hand in
+    # slices of batch-wide buffers (e.g. the prefill rows of a decode-first
+    # batch), whose start need not be 16-byte aligned.
+    return to_cute_tensor_kvouter(t, assumed_align=4)
 
 
 def _normalize_partial_dtype(partial_dtype: torch.dtype) -> torch.dtype:
@@ -1201,7 +1208,7 @@ def _call_sparse_forward_sm100_csr_varlen(
         causal_store_registers,
     )
     if key not in _compile_cache:
-        from mbsa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from .src.common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:
@@ -1252,10 +1259,10 @@ def _call_sparse_forward_sm100_csr_varlen(
                 None
                 if O_ragged_tma_desc is None
                 else to_cute_tensor_kvouter(O_ragged_tma_desc),
-                None if page_table is None else to_cute_tensor_kvouter(page_table),
-                None if seqused_k is None else to_cute_tensor_kvouter(seqused_k),
-                to_cute_tensor_kvouter(cu_seqlens_q),
-                to_cute_tensor_kvouter(cu_seqlens_k),
+                None if page_table is None else _to_cute_int32_metadata(page_table),
+                None if seqused_k is None else _to_cute_int32_metadata(seqused_k),
+                _to_cute_int32_metadata(cu_seqlens_q),
+                _to_cute_int32_metadata(cu_seqlens_k),
                 Float32(softmax_scale),
                 Float32(lse_temperature_inv_scale),
                 Int32(max_num_kv_blocks),

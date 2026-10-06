@@ -23,7 +23,7 @@ from cutlass import Float32, Int32
 from cutlass.cute.nvgpu import cpasync, tcgen05
 from cutlass.cute.runtime import from_dlpack
 
-from mbsa.cute.src.common import pipeline as common_pipeline
+from ..common import pipeline as common_pipeline
 
 
 _BLOCK = 128

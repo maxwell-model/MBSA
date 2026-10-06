@@ -24,7 +24,7 @@ from cutlass import Float32
 from quack import layout_utils
 from quack.cute_dsl_utils import ParamsBase
 
-from mbsa.cute.src.common import utils
+from . import utils
 
 
 @dataclass

@@ -9,11 +9,11 @@ from typing import Any
 
 import torch
 
-from mbsa.cute.src.sm100.router import bf16_indexer_local_top16, bf16_indexer_packed_top16
-from mbsa.cute.src.sm100.merge import _merge_two_attention_states_cutedsl
-from mbsa.cute.msa import allocate_csr_scratch, build_csr, sparse_gqa_stage2_attn_fwd_msa_prefill
-from mbsa.cute.plan import FwdTilePlan, PrefillPolicy, SPEC, dynamic_partial_capacity
-from mbsa.cute.src.sm100.fixed.interface import BsaOutputLayout, bsa_attn_sm100_blk128_fwd
+from .src.sm100.router import bf16_indexer_local_top16, bf16_indexer_packed_top16
+from .src.sm100.merge import _merge_two_attention_states_cutedsl
+from .msa import allocate_csr_scratch, build_csr, sparse_gqa_stage2_attn_fwd_msa_prefill
+from .plan import FwdTilePlan, PrefillPolicy, SPEC, dynamic_partial_capacity
+from .src.sm100.fixed.interface import BsaOutputLayout, bsa_attn_sm100_blk128_fwd
 
 
 def _packed_lengths(
@@ -106,11 +106,11 @@ class AttentionPlan:
     def _refresh_dynamic_output_map(self) -> None:
         if self.dynamic_kernel_cfg is None:
             return
-        from mbsa.cute.src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
+        from .src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
 
         if self.dynamic_kernel_cfg.output_layout is not OutputLayout.SHUFFLED:
             return
-        from mbsa.cute.src.sm100.prepare_scheduler import prepare_sparse_fwd_tma_tile_map
+        from .src.sm100.prepare_scheduler import prepare_sparse_fwd_tma_tile_map
 
         row_ptr, _, schedule = self.dynamic_state
         prepare_sparse_fwd_tma_tile_map(
@@ -164,7 +164,7 @@ class AttentionPlan:
                 or self.lpt_scheduler_metadata is None
             ):
                 raise RuntimeError("LPT schedule workspace was not prepared")
-            from mbsa.cute.src.sm100.build_k2q_csr import run_reorder_schedule_qcount_bucket16
+            from .src.sm100.build_k2q_csr import run_reorder_schedule_qcount_bucket16
 
             run_reorder_schedule_qcount_bucket16(
                 self.native_scheduler_metadata,
@@ -175,7 +175,7 @@ class AttentionPlan:
             )
             schedule.scheduler_metadata = self.lpt_scheduler_metadata
         elif route_ready is not None:
-            from mbsa.cute.src.sm100.build_k2q_csr import run_publish_route_ready
+            from .src.sm100.build_k2q_csr import run_publish_route_ready
 
             run_publish_route_ready(route_ready)
         self._refresh_dynamic_output_map()
@@ -632,7 +632,7 @@ def prepare_attention(
         raise ValueError("valid_kv_tokens does not match per-request KV lengths")
 
     if dynamic_kernel_cfg is None:
-        from mbsa.cute.src.sm100.fwd.config import select_msa_cfg  # noqa: PLC0415
+        from .src.sm100.fwd.config import select_msa_cfg  # noqa: PLC0415
 
         inferred_full_score_tiles = (
             bool(dynamic_full_score_tiles)
@@ -707,13 +707,13 @@ def prepare_attention(
     shuffled_output = False
     partial_capacity = dynamic_partial_capacity(skv)
     if dynamic_kernel_cfg is not None:
-        from mbsa.cute.src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
+        from .src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
 
         shuffled_output = dynamic_kernel_cfg.output_layout is OutputLayout.SHUFFLED
     if shuffled_output:
         if batch != 1:
             raise ValueError("shuffled MSA output currently requires batch size one")
-        from mbsa.cute.src.sm100.prepare_scheduler import prepare_sparse_fwd_tma_tile_map
+        from .src.sm100.prepare_scheduler import prepare_sparse_fwd_tma_tile_map
 
         prepare_sparse_fwd_tma_tile_map(
             schedule=schedule,
@@ -751,7 +751,7 @@ def prepare_attention(
     dynamic_out = out if fuse_fixed_state_in_dynamic_combine else torch.empty_like(q)
     out_lse = torch.empty((total_q, SPEC.q_heads), dtype=torch.float32, device=q.device)
     if shuffled_output:
-        from mbsa.cute.src.sm100.fwd.config import MSA_OUTPUT_TILE_ROWS  # noqa: PLC0415
+        from .src.sm100.fwd.config import MSA_OUTPUT_TILE_ROWS  # noqa: PLC0415
 
         tile_rows = schedule.tma_tile_capacity * MSA_OUTPUT_TILE_ROWS
         partial_o = torch.empty(
@@ -1209,7 +1209,7 @@ def prepare_pipeline(
                     device=q.device,
                 )
     if is_mx and not attention.fixed_only:
-        from mbsa.cute.src.sm100.mx_router import prepare_mxfp6_router
+        from .src.sm100.mx_router import prepare_mxfp6_router
 
         mxfp6_router = prepare_mxfp6_router(
             index_q,

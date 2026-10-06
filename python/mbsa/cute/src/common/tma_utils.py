@@ -573,7 +573,7 @@ def create_flat_kv_tma_descs(kv_flat, *, box_x=64, box_y=128):
 
 # Compatibility Re-exports
 
-from mbsa.cute.src.common.copy_utils import atomic_add_broadcast_i32, atomic_add_i32, convert_layout_acc_mn, convert_layout_from_tmem16x256b_to_acc_sm90, make_16x256b_tensor_mn_view, real_col_to_stg128_fake_col, real_col_to_stg128_fp8_fake_col, real_col_to_stg128_half_fake_col, stg128_fake_col_to_real_col, stg128_fp8_fake_col_to_real_col, stg128_half_fake_col_to_real_col, stg_128, stg_128_cs, stg_128_bf16, stg_128_bf16_cs, stg_128_f16, stg_128_f16_cs, stg_128_fp8_e4m3_cs, stg_32_fp8_e4m3, stg_64_bf16, stg_64_f16
+from .copy_utils import atomic_add_broadcast_i32, atomic_add_i32, convert_layout_acc_mn, convert_layout_from_tmem16x256b_to_acc_sm90, make_16x256b_tensor_mn_view, real_col_to_stg128_fake_col, real_col_to_stg128_fp8_fake_col, real_col_to_stg128_half_fake_col, stg128_fake_col_to_real_col, stg128_fp8_fake_col_to_real_col, stg128_half_fake_col_to_real_col, stg_128, stg_128_cs, stg_128_bf16, stg_128_bf16_cs, stg_128_f16, stg_128_f16_cs, stg_128_fp8_e4m3_cs, stg_32_fp8_e4m3, stg_64_bf16, stg_64_f16
 
 
 __all__ = [

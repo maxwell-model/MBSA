@@ -12,7 +12,7 @@ from typing import Optional
 
 import torch
 
-from mbsa.cute.src.sm100.prepare_k2q_csr import SparseK2qCsrBuilderSm100
+from .src.sm100.prepare_k2q_csr import SparseK2qCsrBuilderSm100
 
 
 def _validate_cu_seqlens(cu_seqlens: torch.Tensor, *, name: str) -> None:

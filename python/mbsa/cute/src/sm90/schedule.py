@@ -135,7 +135,7 @@ class ScheduleScanSm90:
         tidx, _, _ = cute.arch.thread_idx()
         lane = cute.arch.lane_idx()
         warp = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-        smem = cutlass.memory.SmemAllocator()
+        smem = cutlass.utils.SmemAllocator()
         storage = smem.allocate(self.shared_storage)
         warp_counts = storage.warp_counts.get_tensor(cute.make_layout(32))
         warp_items = storage.warp_items.get_tensor(cute.make_layout(32))

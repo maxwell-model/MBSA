@@ -11,7 +11,7 @@ import cutlass.cute as cute
 from cutlass import Float32
 
 from quack import layout_utils
-from mbsa.cute.src.sm100.fixed import utils
+from . import utils
 from quack.cute_dsl_utils import ParamsBase
 
 

@@ -7,7 +7,7 @@ import argparse
 import json
 
 import torch
-from mbsa import reference_pipeline
+from .. import reference_pipeline
 
 
 def main():
@@ -53,11 +53,11 @@ def main():
     if args.backend == "reference":
         actual = reference_pipeline(*operands)
     elif args.backend == "triton":
-        from mbsa import triton_pipeline
+        from .. import triton_pipeline
 
         actual = triton_pipeline(*operands)
     else:
-        from mbsa import prepare_cutedsl_pipeline
+        from .. import prepare_cutedsl_pipeline
 
         actual = prepare_cutedsl_pipeline(*operands).run()
     if args.check and args.backend != "reference":

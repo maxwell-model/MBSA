@@ -10,18 +10,18 @@ from typing import Optional, Tuple
 
 import torch
 
-from mbsa.cute.src.sm100.fixed.api_logging import flashinfer_api
+from .api_logging import flashinfer_api
 
 import cuda.bindings.driver as cuda
 
 import cutlass
 import cutlass.cute as cute
 
-from mbsa.cute.src.sm100.fixed.bsa_utils.cache_utils import get_jit_cache
-from mbsa.cute.src.sm100.fixed.bsa_utils.testing import is_fake_mode
-from mbsa.cute.src.sm100.fixed.bsa_utils import fa_logging
-from mbsa.cute.src.sm100.fixed.bsa_utils.cute_tensor_utils import to_cute_tensor
-from mbsa.cute.src.sm100.fixed.flash_fwd_sm100 import FlashAttentionForwardSm100
+from .bsa_utils.cache_utils import get_jit_cache
+from .bsa_utils.testing import is_fake_mode
+from .bsa_utils import fa_logging
+from .bsa_utils.cute_tensor_utils import to_cute_tensor
+from .flash_fwd_sm100 import FlashAttentionForwardSm100
 
 _bsa_clc_enabled: bool = os.environ.get("BSA_CLC", "1") == "1"
 

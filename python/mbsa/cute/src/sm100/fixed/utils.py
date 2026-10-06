@@ -14,7 +14,7 @@ from cutlass.cutlass_dsl import T, dsl_user_op
 from cutlass._mlir.dialects import nvvm, llvm
 from cutlass.cute.runtime import from_dlpack
 
-from mbsa.cute.src.sm100.fixed.bsa_utils.nvvm_compat import NVVM_FMAX_REQUIRES_RESULT_TYPE
+from .bsa_utils.nvvm_compat import NVVM_FMAX_REQUIRES_RESULT_TYPE
 
 _MIXER_ATTRS = ("__vec_size__",)
 

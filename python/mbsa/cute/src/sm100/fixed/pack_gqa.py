@@ -6,7 +6,7 @@ import cutlass
 import cutlass.cute as cute
 
 from quack import layout_utils
-from mbsa.cute.src.sm100.fixed import utils
+from . import utils
 
 
 def pack_gqa_layout(T, qhead_per_kvhead, nheads_kv, head_idx):

@@ -206,7 +206,7 @@ class IndexScoreTop16Sm90:
             cpasync.prefetch_descriptor(tma_q)
             cpasync.prefetch_descriptor(tma_k)
 
-        smem = cutlass.memory.SmemAllocator()
+        smem = cutlass.utils.SmemAllocator()
         storage = smem.allocate(self.shared_storage)
         producer = pipeline.CooperativeGroup(pipeline.Agent.Thread, 1)
         consumers = pipeline.CooperativeGroup(

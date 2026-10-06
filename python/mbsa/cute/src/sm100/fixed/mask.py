@@ -7,7 +7,7 @@ import cutlass
 import cutlass.cute as cute
 from cutlass import Float32, Int32, Uint32, const_expr
 
-from mbsa.cute.src.sm100.fixed import utils
+from . import utils
 
 MaskGenFn: TypeAlias = Callable[[int], Uint32]
 MASK_R2P_CHUNK_SIZE: int = 32

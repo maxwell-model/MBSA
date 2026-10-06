@@ -8,7 +8,7 @@ from cutlass import Int32, Boolean, const_expr
 from cutlass.cute.nvgpu import tcgen05
 from cutlass._mlir.dialects import llvm
 
-from mbsa.cute.src.sm100.fixed import mma_sm100_desc as sm100_desc
+from . import mma_sm100_desc as sm100_desc
 
 
 @cute.jit

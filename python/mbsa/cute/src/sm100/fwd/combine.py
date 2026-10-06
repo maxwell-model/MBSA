@@ -24,14 +24,14 @@ from cutlass.cute.nvgpu import cpasync
 from cutlass import Float32, Int32, Int64, Boolean, const_expr
 from cutlass.cutlass_dsl import BaseDSL
 
-from mbsa.cute.src.common import utils
-from mbsa.cute.src.common.cute_dsl_utils import assume_tensor_aligned, torch2cute_dtype_map
-from mbsa.cute.src.common.seqlen_info import SeqlenInfo
+from ...common import utils
+from ...common.cute_dsl_utils import assume_tensor_aligned, torch2cute_dtype_map
+from ...common.seqlen_info import SeqlenInfo
 from cutlass.cute import FastDivmodDivisor
 
-from mbsa.cute.src.common.pack_gqa import PackGQAComb
-from mbsa.cute.src.common.tma_utils import stg128_fake_col_to_real_col, stg128_fp8_fake_col_to_real_col, stg128_half_fake_col_to_real_col
-from mbsa.cute.src.sm100.fwd.config import MSA_OUTPUT_TILE_ROWS
+from ...common.pack_gqa import PackGQAComb
+from ...common.tma_utils import stg128_fake_col_to_real_col, stg128_fp8_fake_col_to_real_col, stg128_half_fake_col_to_real_col
+from .config import MSA_OUTPUT_TILE_ROWS
 
 
 _tma_tile_combine_compile_cache: dict = {}
@@ -2078,7 +2078,7 @@ def combine(
         bool(use_vector_initial),
     )
     if key not in _combine_compile_cache:
-        from mbsa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from ...common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:
