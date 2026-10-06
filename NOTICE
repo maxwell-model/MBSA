@@ -36,6 +36,21 @@ Fixed BSA
   Supplemental BSD-3-Clause licenses and attribution for FlashAttention and
   Block-Sparse-Attention are included under that directory's licenses/ tree.
 
+DeepGEMM
+  https://github.com/deepseek-ai/DeepGEMM, via maxwell-model/DeepGEMM
+  The MXFP6 decode paged-MQA-logits kernel, its scheduler and the SM100
+  helpers appear under python/mbsa/mxfp6/csrc/. Helpers are reduced to the
+  definitions the scorers use; no DeepGEMM header tree is vendored. Original
+  component license and notices: python/mbsa/third_party/deep_gemm/LICENSE
+  and NOTICE.
+
+vLLM-derived MXFP6 kernels
+  python/mbsa/mxfp6/ (write.py, scoring.py and the remaining csrc/ files)
+  retains the Apache-2.0 SPDX license and vLLM contributor copyright. Moved
+  from the vLLM Maxwell-V1-Flash branch
+  (vllm/models/maxwell_v1_flash/nvidia/ops/mxfp6/, on top of revision
+  79c28d4d63) with package imports and a framework-neutral build entry point.
+
 vLLM-derived index codecs
   python/mbsa/index_formats.py retains its Apache-2.0 SPDX license and vLLM
   contributor copyright. Its source revision and MBSA adaptations are

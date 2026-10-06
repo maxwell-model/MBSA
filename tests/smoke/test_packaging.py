@@ -31,6 +31,15 @@ LOCAL_ROOTS = {
     "mbsa": ROOT / "python/mbsa",
 }
 
+MXFP6_SOURCES = (
+    "fp6_dg_ext.cu",
+    "fp6_ext.cu",
+    "fp6_index_kernel.cuh",
+    "paged_mqa_logits_scheduler.cuh",
+    "sm100_fp6_paged_mqa_logits.cuh",
+    "sm100_utils.cuh",
+)
+
 BASELINE_ALLOWED = {"__future__", "torch", "triton", "types", "importlib"}
 
 
@@ -88,7 +97,10 @@ def check_sources():
         PACKAGE / "third_party/msa/NOTICE",
         PACKAGE / "third_party/fixed_bsa/LICENSE",
         PACKAGE / "third_party/fixed_bsa/NOTICE",
+        PACKAGE / "third_party/deep_gemm/LICENSE",
+        PACKAGE / "third_party/deep_gemm/NOTICE",
         MSA / "src/sm100/build_k2q_csr/build_k2q_csr.cu",
+        *(PACKAGE / "mxfp6/csrc" / name for name in MXFP6_SOURCES),
     )
     for path in required:
         if not path.is_file():
@@ -125,7 +137,10 @@ def check_wheel(path):
         "mbsa/third_party/msa/NOTICE",
         "mbsa/third_party/fixed_bsa/LICENSE",
         "mbsa/third_party/fixed_bsa/NOTICE",
+        "mbsa/third_party/deep_gemm/LICENSE",
+        "mbsa/third_party/deep_gemm/NOTICE",
         "mbsa/cute/src/sm100/build_k2q_csr/build_k2q_csr.cu",
+        *(f"mbsa/mxfp6/csrc/{name}" for name in MXFP6_SOURCES),
     )
     with zipfile.ZipFile(path) as wheel, tempfile.TemporaryDirectory() as folder:
         names = set(wheel.namelist())

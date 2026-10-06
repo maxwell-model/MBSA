@@ -118,6 +118,23 @@ out, lse = sparse_atten_func(
 
 The CSR operator supports caller workspace, initial state, separate `MSA`/`COMBINE` phases and temperature LSE. Split phases combined with temperature LSE are rejected, following MSA. Hopper temperature other than 1 requires a second attention pass. Blackwell CSR initial state retains MSA's batch-one restriction; the model pipeline handles packed Fixed/Remote merging separately.
 
+### MXFP6 index kernels (SM100)
+
+`mbsa.mxfp6` holds the kernels behind the MX Index cache: Triton writers that rotate, quantize and pack index K into MXFP6 pages and index Q into MXFP8 rows, and CUDA page scorers for decode (persistent, 1-4 queries per request) and prefill (per-token causal bound). They match `mbsa.index_formats` bit for bit, and the two scorers return identical `[4, total_q, pages]` FP32 page scores.
+
+```python
+from mbsa.mxfp6 import compile_extensions, decode_score, prefill_score
+from mbsa.mxfp6.write import quantize_q_mxfp8_fused, write_index_k
+
+write_index_k(index_k, slots, cache)            # [T,128] -> flat uint8 pages
+q_codes, q_scales = quantize_q_mxfp8_fused(index_q)
+compile_extensions()                            # optional: build before serving
+scores = decode_score(q_codes, q_scales, cache, block_table, seq_lens,
+                      init_blocks=1, local_blocks=1, score_sum=False, sm_scale=s)
+```
+
+The scorers need an SM100-family GPU. A packaging build (vLLM's) compiles them, and the Blackwell CSR builder, ahead of time and installs each as a module next to its loader (`mbsa/mxfp6/mbsa_mxfp6_{prefill,decode}`, `mbsa/cute/src/sm100/build_k2q_csr/mbsa_build_k2q_csr_ext`); MBSA imports those first. Otherwise they are compiled with `torch.utils.cpp_extension` and `nvcc` on first use, or eagerly by `compile_extensions()`. `MBSA_EXTENSIONS=prebuilt` forbids the JIT fallback and `MBSA_EXTENSIONS=jit` ignores prebuilt modules; `mbsa._cuda_jit.LOADED` records which path each extension took. The DeepGEMM-derived code they use lives in `python/mbsa/mxfp6/csrc/`; CUTLASS/CuTe headers are not vendored and are located in this order: `MBSA_CUTLASS_INCLUDE` (a directory containing `cute/` and `cutlass/`), `$CUTLASS_HOME/include`, then the include directories shipped by an installed `vllm` (`third_party/deep_gemm/include`), `deep_gemm` (`include`) or `nvidia-cutlass` (`cutlass_library/source/include`) package. If none is found, the build fails naming `MBSA_CUTLASS_INCLUDE`.
+
 ## Tests and benchmarks
 
 ```bash
@@ -145,6 +162,7 @@ python/mbsa/
   sparse.py                   MSA-compatible CSR interface
   sparse_fmha_adapter.py       paged-prefill integration
   index_formats.py            native Index cache codecs and test oracle helpers
+  mxfp6/                      MXFP6 index writers (Triton) and page scorers (CUDA)
   cute/
     example.py                runnable prefill example
     interface.py              Blackwell sparse forward
@@ -164,4 +182,4 @@ docs/                         architecture and supplied performance figures
 
 Original MBSA code is licensed under [Apache-2.0](LICENSE). Third-party code retains its original licenses and copyright notices; see [NOTICE](NOTICE).
 
-[NOTICE](NOTICE) records source attribution and adaptations. Component licenses and notices remain under `python/mbsa/third_party/`. MBSA derives sparse-forward components from [MiniMax MSA](https://github.com/MiniMax-AI/MSA) and retains the existing Fixed BSA snapshot. GPU kernels use [CUTLASS / CuTe DSL](https://github.com/NVIDIA/cutlass) and [QuACK](https://github.com/Dao-AILab/quack). The Python oracle and original Triton baseline retain their original copyright notices.
+[NOTICE](NOTICE) records source attribution and adaptations. Component licenses and notices remain under `python/mbsa/third_party/`. MBSA derives sparse-forward components from [MiniMax MSA](https://github.com/MiniMax-AI/MSA) and retains the existing Fixed BSA snapshot. MBSA derives the MXFP6 index scorers (the decode paged-MQA-logits kernel, its scheduler and the SM100 helpers) from [DeepGEMM](https://github.com/deepseek-ai/DeepGEMM) via the maxwell-model fork, under the MIT license. GPU kernels use [CUTLASS / CuTe DSL](https://github.com/NVIDIA/cutlass) and [QuACK](https://github.com/Dao-AILab/quack). The Python oracle and original Triton baseline retain their original copyright notices.

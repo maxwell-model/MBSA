@@ -24,7 +24,7 @@ license-files = ["LICENSE", "NOTICE"]
 where = ["python"]
 
 [tool.setuptools.package-data]
-mbsa = ["third_party/**/LICENSE", "third_party/**/NOTICE", "third_party/**/AUTHORS", "third_party/**/*.md", "cute/src/**/*.cu"]
+mbsa = ["third_party/**/LICENSE", "third_party/**/NOTICE", "third_party/**/AUTHORS", "third_party/**/*.md", "cute/src/**/*.cu", "mxfp6/csrc/*.cu", "mxfp6/csrc/*.cuh"]
 
 [tool.ruff.lint]
 select = ["F"]

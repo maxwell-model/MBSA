@@ -1,0 +1,24 @@
+DeepGEMM
+Copyright (c) 2025 DeepSeek
+
+Licensed under the MIT License; see LICENSE.
+
+-------------------------------------------------------------------------------
+MBSA integration
+MBSA derives the MXFP6 index scorers' DeepGEMM code from
+https://github.com/deepseek-ai/DeepGEMM, via the maxwell-model/DeepGEMM fork
+(https://github.com/maxwell-model/DeepGEMM):
+
+  python/mbsa/mxfp6/csrc/sm100_utils.cuh
+    Definitions from deep_gemm/include/deep_gemm/{common,ptx,mma}/ at
+    maxwell-model/DeepGEMM acc39c15353f46dec5ded3e78687d6ef897eea9d, reduced
+    to what the scorers use.
+  python/mbsa/mxfp6/csrc/paged_mqa_logits_scheduler.cuh
+    deep_gemm/include/deep_gemm/scheduler/paged_mqa_logits.cuh at
+    deepseek-ai/DeepGEMM a6b593d2826719dcf4892609af7b84ee23aaf32a, reformatted.
+  python/mbsa/mxfp6/csrc/sm100_fp6_paged_mqa_logits.cuh
+    Derived from deep_gemm/include/deep_gemm/impls/
+    sm100_fp4_paged_mqa_logits.cuh at a6b593d2826719dcf4892609af7b84ee23aaf32a.
+
+Original copyright and license identifiers are retained in each file header.
+No DeepGEMM or CUTLASS header tree is vendored.
