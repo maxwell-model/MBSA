@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """GPU qualification entry point; architecture overrides exist only in tests.
 
 On B300, --dispatch-sm100 selects the SM100 policy. CuTe compiles for the

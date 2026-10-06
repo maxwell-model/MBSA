@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Public preparation API for the BF16 CuTe DSL performance path."""
 
 from __future__ import annotations

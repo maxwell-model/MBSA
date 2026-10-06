@@ -1,9 +1,9 @@
 # Copyright 2024 CompassLLM and the Shopee Search team. All rights reserved.
+# Modified for MBSA: standalone adapter and optional LSE; see NOTICE.
 
 """Maxwell Block Sparse Attention Python accuracy oracle.
 
-Extracted from ``CompassMoeBlockSparseGQAAttention`` in:
-https://git.garena.com/shopee/llm/instruction-tuning/compass-training/compassv4_hf_assets/-/blob/main/modeling_compass_moe.py
+Adapted from the pinned HF attention reference.
 Revision: d97a6c52967a5ed332e2196a5b985f0b4a475549
 Source methods: lines 492-851 (query positions, allowed keys, route selection,
 fixed support and sparse attention). Their computation is preserved, including

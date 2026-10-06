@@ -1,4 +1,5 @@
 # Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+# Modified for MBSA: package integration; see root NOTICE.
 """BF16 CuTe DSL router, fixed/dynamic attention, and state reduction."""
 
 from __future__ import annotations

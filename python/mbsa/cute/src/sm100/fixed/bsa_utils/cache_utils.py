@@ -1,3 +1,4 @@
+# Modified for MBSA: package integration; see root NOTICE.
 # Manage Ahead-of-Time (AOT) compiled kernels
 import fcntl
 import hashlib

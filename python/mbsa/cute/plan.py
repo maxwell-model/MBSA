@@ -1,4 +1,5 @@
 # Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+# Modified for MBSA: package integration; see root NOTICE.
 """Unified aligned-plan ABI for provisional Top-32 block-sparse GQA.
 
 The prefill dispatch consumes this plan for contiguous and paged KV,

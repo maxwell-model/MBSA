@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Modified for MBSA: package integration; see root NOTICE.
 
 """MX index operand codecs compatible with the vLLM Maxwell cache layout.
 
-Adapted from MiniMax/Shopee vLLM branch ``aip/maxwell-v1-flash``, revision
+Adapted from the vLLM branch ``aip/maxwell-v1-flash``, revision
 950d80710610ebffc41128dad89845346262af48, file
 vllm/model_executor/layers/maxwell_moe_index_mxfp6.py (Apache-2.0).
 

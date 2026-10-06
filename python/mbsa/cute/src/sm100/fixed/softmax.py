@@ -1,3 +1,4 @@
+# Modified for MBSA: package integration; see root NOTICE.
 # Copyright (c) 2025, Tri Dao.
 
 import math

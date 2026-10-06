@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Zero-overhead local substitute for FlashInfer's optional API logger.
 
 The unified backend intentionally does not import FlashInfer's process-wide

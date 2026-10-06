@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Optional vLLM paged-prefill adapter; importing it does not import vLLM."""
 
 from collections import OrderedDict

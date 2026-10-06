@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Host preparation and execution for the BF16 SM90 (H100) CuTe DSL path.
 
 The plan owns every workspace, compiled kernel and bound argument list, so

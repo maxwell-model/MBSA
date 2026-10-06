@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """BF16 SM90 Fixed / Dynamic sparse attention and state combine.
 
 All attention tiles pack GQA: 128 MMA rows are 16 queries x 8 query heads of

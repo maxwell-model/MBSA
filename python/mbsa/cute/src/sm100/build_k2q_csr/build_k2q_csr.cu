@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 MiniMax
 // SPDX-License-Identifier: MIT
+// Modified for MBSA: package integration; see root NOTICE.
 
 // CUDA C++ q2k -> k2q CSR builder.
 //

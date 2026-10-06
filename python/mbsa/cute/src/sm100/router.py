@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Native BF16/FP8 SM103 block-max router.
 
 Index Q and Index K feed TMA/UMMA directly. Each CTA emits partition Top-16;

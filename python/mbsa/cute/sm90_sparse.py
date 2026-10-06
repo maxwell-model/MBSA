@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """MiniMax MSA-compatible sparse attention on SM90 (H100).
 
 Implements ``build_k2q_csr`` and ``sparse_atten_func`` with the signatures

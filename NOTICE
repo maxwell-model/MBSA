@@ -1,18 +1,25 @@
 Maxwell Block Sparse Attention (MBSA)
 Source attribution and integration notice
 
+Project licensing
+  Original MBSA code and MBSA-owned modifications are licensed under
+  Apache License 2.0; see LICENSE. Third-party source retains its original
+  license and copyright notices. This project license does not grant rights
+  to upstream code for which no redistribution license has been established.
+  Modified source files carry MBSA integration notices; their original
+  copyright and license headers are preserved.
+
 Python accuracy oracle
   Copyright 2024 CompassLLM and the Shopee Search team.
   The original copyright notice remains in python/mbsa/reference.py.
-  Source: modeling_compass_moe.py, CompassMoeBlockSparseGQAAttention,
+  Adapted from the pinned HF attention reference,
   revision d97a6c52967a5ed332e2196a5b985f0b4a475549, methods at lines 492-851.
-  https://git.garena.com/shopee/llm/instruction-tuning/compass-training/compassv4_hf_assets/-/blob/d97a6c52967a5ed332e2196a5b985f0b4a475549/modeling_compass_moe.py
   Model projections, normalization, RoPE, cache management and Transformers
   dependencies are excluded. The standalone adapter adds natural-log LSE.
 
 Triton precision baseline
-  Retained from compass_bsa/gpu.py and compass_bsa/gpu_v2.py at MBSA
-  revision 7490490. The original kernel bodies and attribution are preserved.
+  Retained from the original Triton backend at MBSA revision 7490490.
+  The original kernel bodies and attribution are preserved.
 
 MiniMax MSA
   https://github.com/MiniMax-AI/MSA
@@ -26,6 +33,13 @@ Fixed BSA
   row-specific Prefix/SWA masks, tail-safe reduction selection and package
   imports. The original license, notice and pinned source provenance remain
   under python/mbsa/third_party/fixed_bsa/.
+  Supplemental BSD-3-Clause licenses and attribution for FlashAttention and
+  Block-Sparse-Attention are included under that directory's licenses/ tree.
+
+vLLM-derived index codecs
+  python/mbsa/index_formats.py retains its Apache-2.0 SPDX license and vLLM
+  contributor copyright. Its source revision and MBSA adaptations are
+  recorded in the file header.
 
 MBSA adaptations
   Prepared routing, Fixed/Remote orchestration and state merging retain the
@@ -39,4 +53,4 @@ MBSA adaptations
 
 Component license and copyright texts remain authoritative for their sources.
 This notice records attribution; it does not assign a new license to upstream
-Shopee code or replace any retained component license.
+code or replace any retained component license.

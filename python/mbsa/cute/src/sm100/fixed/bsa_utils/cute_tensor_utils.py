@@ -1,3 +1,4 @@
+# Modified for MBSA: package integration; see root NOTICE.
 # Copyright (c) 2025 by FlashInfer team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");

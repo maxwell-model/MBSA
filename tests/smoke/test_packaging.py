@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """CPU/GPU contracts and full-query comparison against pinned HF Attention.
 
 The shared config owns every shape and gate. Decode reserves scheduler budget;
@@ -92,7 +93,7 @@ def check_sources():
     for path in required:
         if not path.is_file():
             errors.append(f"missing runtime/license file: {path.relative_to(ROOT)}")
-    for name in ("kernels", "compass_bsa", "maxwell_bsa", "mbsa", "bench"):
+    for name in ("kernels", "maxwell_bsa", "mbsa", "bench"):
         if (ROOT / name).exists():
             errors.append(f"obsolete source directory: {name}")
     for path in (

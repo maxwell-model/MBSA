@@ -6,6 +6,7 @@
 # implemented in NVIDIA CUTLASS (BSD-3-Clause). The numeric values MUST stay
 # identical to the hardware/ISA encodings; see the "Third-party licenses"
 # section of README.md at the repo root for attribution.
+# Modified for MBSA: package integration; see root NOTICE.
 
 from enum import IntEnum
 

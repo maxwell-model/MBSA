@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Small batch-one prefill using one of the three retained backends."""
 
 from __future__ import annotations

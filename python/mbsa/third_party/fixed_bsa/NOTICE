@@ -6,3 +6,14 @@ Copyright 2023-2026 FlashInfer community (https://flashinfer.ai/)
 Some of the code in this project are adapted from other open-source projects with different
 licenses. This product also bundles some third-party components under other open source licenses.
 See licenses/ for text of these licenses.
+
+-------------------------------------------------------------------------------------------------
+MBSA integration
+The backend is relocated to python/mbsa/cute/src/sm100/fixed/ and modified for
+package imports, Fixed Attention masks and reduction integration; see the
+root NOTICE. Original source copyright headers are retained.
+
+Supplemental upstream notices:
+  FlashAttention (BSD-3-Clause): licenses/flash_attention/LICENSE and AUTHORS
+  Block-Sparse-Attention (BSD-3-Clause): licenses/block_sparse_attention/LICENSE
+  Individual source files retain their original named-author copyrights.

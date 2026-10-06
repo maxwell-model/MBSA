@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Native MXFP8 Index Q x packed MXFP6 Index K block-max router.
 
 Index Q, packed K payload and UE8M0 K scale bytes enter shared memory

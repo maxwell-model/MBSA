@@ -7,6 +7,7 @@ name = "mbsa"
 version = "0.1.0"
 description = "Maxwell Block Sparse Attention: Python oracle, Triton baseline, CuTe DSL prefill with BF16/FP8/MX Index"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = ["torch>=2.5"]
 
@@ -17,12 +18,13 @@ dev = ["build>=1.2", "ruff>=0.9"]
 
 [tool.setuptools]
 package-dir = {"" = "python"}
+license-files = ["LICENSE", "NOTICE"]
 
 [tool.setuptools.packages.find]
 where = ["python"]
 
 [tool.setuptools.package-data]
-mbsa = ["third_party/**/LICENSE", "third_party/**/NOTICE", "third_party/**/*.md", "cute/src/**/*.cu"]
+mbsa = ["third_party/**/LICENSE", "third_party/**/NOTICE", "third_party/**/AUTHORS", "third_party/**/*.md", "cute/src/**/*.cu"]
 
 [tool.ruff.lint]
 select = ["F"]

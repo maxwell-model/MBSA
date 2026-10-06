@@ -1,8 +1,8 @@
-include README.md NOTICE .gitlab-ci.yml
+include LICENSE README.md NOTICE .gitlab-ci.yml
 recursive-include tests *.py *.json
 recursive-include benchmarks *.py
 recursive-include scripts *.py
 recursive-include docs *.png
-recursive-include python/mbsa/third_party LICENSE NOTICE *.md
+recursive-include python/mbsa/third_party LICENSE NOTICE AUTHORS *.md
 recursive-include python/mbsa/cute/src *.cu
 global-exclude __pycache__ *.py[cod] .DS_Store ._*

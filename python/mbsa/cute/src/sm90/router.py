@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Native SM90 block-max Indexer and partition Top-16.
 
 BF16 uses a 256-query tile and two WGMMA consumer warpgroups. E4M3 uses

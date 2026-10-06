@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Prefill performance matrix: same shared shapes, full precision gates and samples.
 
 MBSA and native vLLM are separate sequential runs on the same empty GPU.
@@ -160,7 +161,6 @@ def native_modules():
     for stem, prefix in (
         ("maxwell_moe", "MaxwellMoe"),
         ("maxwell_v1", "MaxwellV1"),
-        ("compass", "Compass"),
     ):
         name = f"vllm.model_executor.layers.{stem}_bsa"
         if importlib.util.find_spec(name) is not None:

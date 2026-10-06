@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Triton precision baseline: exact routing and split sparse attention.
 
 Routing retains disjoint sixteen-block partitions and an exact global Top-16

@@ -1,4 +1,5 @@
 # Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+# Modified for MBSA: package integration; see root NOTICE.
 """Merge fixed and dynamic attention states for packed requests."""
 
 from __future__ import annotations

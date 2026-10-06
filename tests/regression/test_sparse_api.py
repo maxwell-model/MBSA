@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """MSA-compatible ``mbsa.sparse`` entry points against an eager reference."""
 
 import sys

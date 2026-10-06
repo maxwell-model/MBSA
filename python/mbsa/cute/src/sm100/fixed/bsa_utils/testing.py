@@ -1,3 +1,4 @@
+# Modified for MBSA: package integration; see root NOTICE.
 """Retained runtime fake-mode check; upstream test helpers are excluded."""
 from torch._guards import active_fake_mode
 

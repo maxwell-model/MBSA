@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """CPU/GPU contracts and full-query comparison against pinned HF Attention.
 
 The shared config owns every shape and gate. Decode reserves scheduler budget;

@@ -1,4 +1,5 @@
 # Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+# Modified for MBSA: package integration; see root NOTICE.
 """BF16 Dynamic MSA and native KV-centric CSR adapters."""
 
 from __future__ import annotations

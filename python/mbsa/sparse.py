@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """MiniMax MSA-compatible sparse attention entry points for Maxwell geometry.
 
 ``sparse_atten_func``, ``build_k2q_csr`` and ``SparseForwardPhase`` keep the

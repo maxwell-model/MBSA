@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """CPU/GPU contracts and full-query comparison against pinned HF Attention.
 
 The shared config owns every shape and gate. Decode reserves scheduler budget;
@@ -65,11 +66,6 @@ def select_cases(config=None, ids=None):
 
 def hf_class(source):
     tree = ast.parse(source.read_text())
-    original = next(
-        c
-        for c in tree.body
-        if isinstance(c, ast.ClassDef) and c.name == "CompassMoeBlockSparseGQAAttention"
-    )
     names = {
         "_query_positions",
         "_allowed_keys",
@@ -77,6 +73,19 @@ def hf_class(source):
         "_build_block_aligned_route",
         "_sparse_attention",
     }
+    candidates = [
+        c
+        for c in tree.body
+        if isinstance(c, ast.ClassDef)
+        and names.issubset(
+            {n.name for n in c.body if isinstance(n, ast.FunctionDef)}
+        )
+    ]
+    if len(candidates) != 1:
+        raise ValueError(
+            f"expected one HF attention class with the required methods; found {len(candidates)}"
+        )
+    original = candidates[0]
     methods = [
         n for n in original.body if isinstance(n, ast.FunctionDef) and n.name in names
     ]

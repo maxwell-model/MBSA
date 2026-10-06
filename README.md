@@ -122,8 +122,8 @@ The CSR operator supports caller workspace, initial state, separate `MSA`/`COMBI
 
 ```bash
 python -m unittest discover -s tests -v
-python benchmarks/bench_precision.py --hf-source /path/to/modeling_compass_moe.py --output /tmp/mbsa-precision
-python benchmarks/bench_sparse_attention_ops.py --hf-source /path/to/modeling_compass_moe.py --output /tmp/mbsa-performance
+python benchmarks/bench_precision.py --hf-source /path/to/modeling_attention.py --output /tmp/mbsa-precision
+python benchmarks/bench_sparse_attention_ops.py --hf-source /path/to/modeling_attention.py --output /tmp/mbsa-performance
 python scripts/qualify_arch.py --mode regression
 python -m build
 python -m tests.smoke.test_packaging --wheel dist/mbsa-0.1.0-py3-none-any.whl
@@ -160,6 +160,8 @@ tests/{smoke,regression,integration}/
 docs/                         architecture and supplied performance figures
 ```
 
-## Attribution
+## License and attribution
+
+Original MBSA code is licensed under [Apache-2.0](LICENSE). Third-party code retains its original licenses and copyright notices; see [NOTICE](NOTICE).
 
 [NOTICE](NOTICE) records source attribution and adaptations. Component licenses and notices remain under `python/mbsa/third_party/`. MBSA derives sparse-forward components from [MiniMax MSA](https://github.com/MiniMax-AI/MSA) and retains the existing Fixed BSA snapshot. GPU kernels use [CUTLASS / CuTe DSL](https://github.com/NVIDIA/cutlass) and [QuACK](https://github.com/Dao-AILab/quack). The Python oracle and original Triton baseline retain their original copyright notices.

@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 MiniMax
 # SPDX-License-Identifier: MIT
+# Modified for MBSA: package integration; see root NOTICE.
 
 """Sparse k2q CSR builder for SM100.
 

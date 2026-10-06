@@ -1,3 +1,4 @@
+# Modified for MBSA: package integration; see root NOTICE.
 from dataclasses import dataclass
 from typing import Optional
 

@@ -1,3 +1,4 @@
+# Modified for MBSA: package integration; see root NOTICE.
 # Supported features:
 # - BF16 & FP16 dtype
 # - noncausal and causal attention

@@ -1,3 +1,4 @@
+# Modified for MBSA: package integration; see root NOTICE.
 # Copyright (c) 2025, Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, Tri Dao.
 from dataclasses import dataclass
 from typing import Optional

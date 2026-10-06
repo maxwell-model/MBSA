@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """KV-centric schedule for SM90 Dynamic attention (device-only, no host sync).
 
 Three SIMT kernels turn the route [4, Q, 16] into work items:

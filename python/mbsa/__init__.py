@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Maxwell Block Sparse Attention sparse attention: Python reference, Triton baseline, CuTe DSL."""
 
 from importlib import import_module
