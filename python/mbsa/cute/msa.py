@@ -7,7 +7,7 @@ from typing import Any, Optional, Tuple
 
 import torch
 
-from .._vendor.msa.python import fmha_sm100
+from mbsa.cute import sm100_sparse as fmha_sm100
 
 
 def allocate_csr_scratch(**kwargs):

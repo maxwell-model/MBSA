@@ -1,7 +1,0 @@
-test_cutedsl_permuted_kv_pages_with_tail (tests.test_backends.BackendAlignment.test_cutedsl_permuted_kv_pages_with_tail) ... ok
-
-----------------------------------------------------------------------
-Ran 1 test in 19.119s
-
-OK
-[aot_cache] Saved sparse_forward_sm100_csr_varlen_4wg_cpasync_bulk_stg_scattered_static_generic_q2_kv1_r192_192_80_48 -> /opt/vllm/compile_cache/minfer/mm_sparse_attn/sparse_forward_sm100_csr_varlen_4wg_cpasync_bulk_stg_scattered_static_generic_q2_kv1_r192_192_80_48_86d2c0dac6039fe0.o (0.3s)

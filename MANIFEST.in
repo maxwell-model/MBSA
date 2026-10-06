@@ -1,9 +1,8 @@
-include README.md PROVENANCE.md .gitlab-ci.yml
-include .dockerignore
-recursive-include docker Dockerfile.* *.sh
-recursive-include examples *.py
+include README.md NOTICE .gitlab-ci.yml
 recursive-include tests *.py *.json
-recursive-include tools *.py
-recursive-include docs *.md *.png *.patch
-recursive-include docs/validation *.json *.jsonl *.log *.exit *.gz *.html *.csv *.svg
+recursive-include benchmarks *.py
+recursive-include scripts *.py
+recursive-include docs *.png
+recursive-include python/mbsa/third_party LICENSE NOTICE *.md
+recursive-include python/mbsa/cute/src *.cu
 global-exclude __pycache__ *.py[cod] .DS_Store ._*

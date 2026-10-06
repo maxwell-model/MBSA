@@ -1,8 +1,0 @@
-# Retained BF16 CuTe-DSL forward and CUDA CSR metadata runtime.
-# Requires NVIDIA SM100 and CUDA toolkit (nvcc) for the CSR extension.
-torch
-apache-tvm-ffi
-ninja
-cuda-python
-nvidia-cutlass-dsl>=4.4.1
-quack-kernels>=0.2.10

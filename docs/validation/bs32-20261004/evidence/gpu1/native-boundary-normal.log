@@ -1,3 +1,0 @@
-INFO 10-04 03:41:12 [maxwell_v1_bsa.py:509] Maxwell V1 Unified prefill preallocated 2.49 GiB GPU (of which 80.9 MiB CSR and 4.0 MiB route) and 0.51 KiB pinned host memory (max_num_seqs=32, max_model_len=262144, max_q=8192).
-WARNING 10-04 03:41:12 [maxwell_v1_bsa.py:1011] Maxwell V1 unified prefill could not serve a batch (index plan max_qo_len=4 has no TileQ=256 Score owner); it ran on the legacy BSA path. 1 refusals so far.
-{"case": 1, "of": 1, "id": "p1-d31-kv65536-q1-boundary", "elapsed_s": 1.8535492550581694}

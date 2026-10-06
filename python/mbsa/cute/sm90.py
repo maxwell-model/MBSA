@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import cuda.bindings.driver as cuda
 import cutlass.cute as cute
 import torch
-from cutlass import Float32, Int32
+from cutlass import Float32, Int32, Float8E4M3FN
 from cutlass.cute.runtime import from_dlpack
 
 from .src.sm90.attention import (
@@ -40,13 +40,18 @@ TOPK = 16
 PREFIX_BLOCKS = 8
 LOCAL_BLOCKS = 8
 TILE_QUERIES = 16
-ROUTER_Q_TILE = IndexScoreTop16Sm90.q_tile
 WORK_QUERIES = DynamicAttentionSm90.max_queries_per_work
 SOFTMAX_SCALE = 128 ** -0.5
 _COMPILE_CACHE: dict[tuple, object] = {}
 
 
 def _cute(t: torch.Tensor, align: int = 16):
+    # PyTorch cu126 cannot export FP8 via DLPack. Keep its bytes and strides
+    # unchanged, then describe the original format to CuTe/WGMMA.
+    if t.dtype == torch.float8_e4m3fn:
+        tensor = from_dlpack(t.view(torch.uint8), assumed_align=align)
+        tensor.element_type = Float8E4M3FN
+        return tensor
     return from_dlpack(t, assumed_align=align)
 
 
@@ -243,7 +248,8 @@ class Sm90PipelinePlan:
                     ("router", g.partition_blocks, g.partitions)
                     + _signature(index_q, index_k_rows, pages, g.router_meta, w.scores),
                     lambda: IndexScoreTop16Sm90(
-                        partition_blocks=g.partition_blocks, partitions=g.partitions
+                        partition_blocks=g.partition_blocks, partitions=g.partitions,
+                        fp8_operand=index_q.dtype == torch.float8_e4m3fn
                     ),
                     router_args,
                 ),
@@ -311,6 +317,7 @@ class Sm90PipelinePlan:
                 _cute(w.relations, 4),
                 _cute(w.partial_out.view(torch.uint8) if fp8 else w.partial_out),
                 _cute(w.partial_lse),
+                _cute(w.work_count, 4),  # unused query limit: remote routes are unmasked
                 softmax_scale,
             )
             launches["dynamic"] = (
@@ -325,7 +332,7 @@ class Sm90PipelinePlan:
             combine_args = tuple(
                 _cute(t)
                 for t in (
-                    w.fixed_out,
+                    w.fixed_out.view(q.shape[0], -1, 8, 128),
                     w.fixed_lse,
                     w.partial_out.view(torch.uint8) if fp8 else w.partial_out,
                     w.partial_lse,
@@ -387,8 +394,8 @@ def prepare_sm90_pipeline(
     batch = len(q_lens)
     if q.dtype != torch.bfloat16 or k.dtype != q.dtype or v.dtype != q.dtype:
         raise TypeError("the SM90 path requires BF16 Q/K/V")
-    if index_q.dtype != q.dtype or index_k.dtype != q.dtype:
-        raise TypeError("the SM90 path requires BF16 Index-Q/K")
+    if index_q.dtype not in (torch.bfloat16, torch.float8_e4m3fn) or index_k.dtype != index_q.dtype:
+        raise TypeError("the SM90 path requires matching BF16 or FP8 E4M3FN Index-Q/K")
     if q.shape[1:] != (32, 128) or v.shape != k.shape:
         raise ValueError("the SM90 path requires Q=[T,32,128] and matching K/V")
     if index_q.shape != (q.shape[0], 4, 128):
@@ -440,12 +447,15 @@ def prepare_sm90_pipeline(
         k_begins.append(k_begins[-1] + kn)
         block_bases.append(block_bases[-1] + nb)
 
-    router_tiles = sum((qn + ROUTER_Q_TILE - 1) // ROUTER_Q_TILE for qn in q_lens)
+    router_q_tile = (IndexScoreTop16Sm90.fp8_q_tile
+                     if index_q.dtype == torch.float8_e4m3fn
+                     else IndexScoreTop16Sm90.q_tile)
+    router_tiles = sum((qn + router_q_tile - 1) // router_q_tile for qn in q_lens)
     partition_blocks, partitions = _router_partitions(router_tiles, max(request_blocks), sms)
     router_meta = []
     for r, (qn, kn) in enumerate(zip(q_lens, kv_lens)):
         parts = -(-request_blocks[r] // partition_blocks)
-        for tile in range((qn + ROUTER_Q_TILE - 1) // ROUTER_Q_TILE):
+        for tile in range((qn + router_q_tile - 1) // router_q_tile):
             router_meta.append([q_begins[r], q_begins[r] + qn, tile, page_bases[r], kn, parts])
     fixed_meta = []
     for r, (qn, kn) in enumerate(zip(q_lens, kv_lens)):
@@ -497,7 +507,7 @@ def prepare_sm90_pipeline(
             entry_segment=torch.empty(relations_total, dtype=torch.int32, device=device),
             entry_rank=torch.empty(relations_total, dtype=torch.int32, device=device),
             relations=torch.zeros(relations_total, dtype=torch.int32, device=device),
-            work=torch.zeros((max_work, 4), dtype=torch.int32, device=device),
+            work=torch.zeros((max_work, 5), dtype=torch.int32, device=device),
             work_count=torch.zeros(1, dtype=torch.int32, device=device),
             partial_out=torch.empty(
                 (relations_total, 8, 128), dtype=partial_dtype, device=device

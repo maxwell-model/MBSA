@@ -45,7 +45,7 @@ LOG2E = math.log2(math.e)
 LN2 = math.log(2.0)
 
 
-def _tiled_mmas(warpgroups: int = 2):
+def _tiled_mmas(warpgroups: int = 2, block_size: int = BLOCK):
     dtype = cutlass.BFloat16
     qk = sm90_utils_basic.make_trivial_tiled_mma(
         dtype,
@@ -54,7 +54,7 @@ def _tiled_mmas(warpgroups: int = 2):
         cute.nvgpu.OperandMajorMode.K,
         Float32,
         atom_layout_mnk=(warpgroups, 1, 1),
-        tiler_mn=(64, BLOCK),
+        tiler_mn=(64, block_size),
     )
     pv = sm90_utils_basic.make_trivial_tiled_mma(
         dtype,
@@ -69,19 +69,19 @@ def _tiled_mmas(warpgroups: int = 2):
     return qk, pv
 
 
-def _packed_q_view(q: cute.Tensor) -> cute.Tensor:
-    """[total_q, 32, 128] -> ((8 heads, total_q), 128, 4 KV heads)."""
-    total_q = q.shape[0]
+def _packed_q_view(q: cute.Tensor, group: int = GROUP) -> cute.Tensor:
+    """[total_q, Hq, 128] -> ((group heads, total_q), 128, Hkv)."""
+    total_q, q_heads = q.shape[0], q.shape[1]
     return cute.make_tensor(
         q.iterator,
         cute.make_layout(
-            ((GROUP, total_q), HEAD_DIM, 4),
-            stride=((HEAD_DIM, 4 * GROUP * HEAD_DIM), 1, GROUP * HEAD_DIM),
+            ((group, total_q), HEAD_DIM, q_heads // group),
+            stride=((HEAD_DIM, q_heads * HEAD_DIM), 1, group * HEAD_DIM),
         ),
     )
 
 
-def _kv_view(k: cute.Tensor, paged: bool) -> cute.Tensor:
+def _kv_view(k: cute.Tensor, paged: bool, block_size: int = BLOCK) -> cute.Tensor:
     """Packed [total_k, 4, 128] -> (total_k, 128, 4).
 
     Paged [pages, 4, 128, 128] with any 16-byte-aligned strides (including
@@ -91,23 +91,26 @@ def _kv_view(k: cute.Tensor, paged: bool) -> cute.Tensor:
         return cute.make_tensor(
             k.iterator,
             cute.make_layout(
-                (BLOCK, HEAD_DIM, 4, k.shape[0]),
+                (block_size, HEAD_DIM, k.shape[1], k.shape[0]),
                 stride=(k.stride[2], 1, k.stride[1], k.stride[0]),
             ),
         )
+    kv_heads = k.shape[1]
     return cute.make_tensor(
         k.iterator,
-        cute.make_layout((k.shape[0], HEAD_DIM, 4), stride=(4 * HEAD_DIM, 1, HEAD_DIM)),
+        cute.make_layout(
+            (k.shape[0], HEAD_DIM, kv_heads), stride=(kv_heads * HEAD_DIM, 1, HEAD_DIM)
+        ),
     )
 
 
-def _kv_blocks(mX: cute.Tensor, kv_head: Int32, token_start: Int32, paged: bool) -> cute.Tensor:
+def _kv_blocks(mX: cute.Tensor, kv_head: Int32, token_start: Int32, paged: bool, block_size: int = BLOCK) -> cute.Tensor:
     """Per-block TMA source: indexed by physical page (paged) or block (packed)."""
     if paged:
-        return cute.local_tile(mX[None, None, kv_head, None], (BLOCK, HEAD_DIM), (0, 0, None))
+        return cute.local_tile(mX[None, None, kv_head, None], (block_size, HEAD_DIM), (0, 0, None))
     return cute.local_tile(
         cute.domain_offset((token_start, 0), mX[None, None, kv_head]),
-        (BLOCK, HEAD_DIM),
+        (block_size, HEAD_DIM),
         (None, 0),
     )
 
@@ -547,24 +550,42 @@ class FixedAttentionSm90:
 class DynamicAttentionSm90:
     """KV-centric routed attention producing per-route normalized partials.
 
-    Each warpgroup owns independent 8-query chunks (64 MMA rows) with its own
-    Q pipeline and output staging buffer, so one warpgroup's epilogue overlaps
-    the other's WGMMA. Both share the work item's K/V stage.
+    Each warpgroup owns independent chunks of ``64 / group`` queries (64 MMA
+    rows) with its own Q pipeline and output staging buffer, so one
+    warpgroup's epilogue overlaps the other's WGMMA. Both share the work
+    item's K/V stage. ``masked`` applies the per-query token limit (causal
+    position and KV length) for the MSA-compatible entry point; MBSA's remote
+    routes are always fully visible and run unmasked.
     """
 
     kv_stages = 2
-    q_stages = 2
     threads = 384
     producer_regs = 24
     mma_regs = 240
     wg_rows = 64
-    chunk_queries = wg_rows // GROUP
     max_queries_per_work = 160
 
-    def __init__(self, *, ctas: int, paged: bool = False, fp8_partial: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        ctas: int,
+        paged: bool = False,
+        fp8_partial: bool = False,
+        group: int = GROUP,
+        topk: int = TOPK,
+        masked: bool = False,
+        q_stages: int = 2,
+        block_size: int = BLOCK,
+    ) -> None:
+        self.block_size = int(block_size)
         self.ctas = int(ctas)
         self.paged = bool(paged)
         self.fp8_partial = bool(fp8_partial)
+        self.group = int(group)
+        self.topk = int(topk)
+        self.masked = bool(masked)
+        self.q_stages = int(q_stages)
+        self.chunk_queries = self.wg_rows // self.group
 
     @cute.jit
     def __call__(
@@ -572,11 +593,13 @@ class DynamicAttentionSm90:
         q: cute.Tensor,  # [total_q, 32, 128]
         k: cute.Tensor,  # [total_k, 4, 128]
         v: cute.Tensor,
-        work: cute.Tensor,  # [W, 4] int32: kv_head, token start or page, list offset, count
+        work: cute.Tensor,  # [W, 5] int32: kv_head, token start or page, list offset,
+        #                     count, request-local first token of the block
         work_count: cute.Tensor,  # [1] int32
         relations: cute.Tensor,  # [R] int32 route-entry IDs grouped by work
-        partial_out: cute.Tensor,  # [R, 8, 128] BF16 or FP8 E4M3FN
-        partial_lse: cute.Tensor,  # [R, 8]
+        partial_out: cute.Tensor,  # [R, group, 128] FP32/BF16/FP16 or FP8 (uint8 view)
+        partial_lse: cute.Tensor,  # [R, group]
+        query_limit: cute.Tensor,  # [total_q] int32 last visible token (masked mode)
         softmax_scale: Float32,
         stream: cuda.CUstream,
     ) -> None:
@@ -590,21 +613,29 @@ class DynamicAttentionSm90:
         sQ_layout = sm90_utils.make_smem_layout(
             dtype, LayoutEnum.ROW_MAJOR, (self.wg_rows, HEAD_DIM), self.q_stages
         )
-        sQ_row_layout = sm90_utils.make_smem_layout(dtype, LayoutEnum.ROW_MAJOR, (GROUP, HEAD_DIM))
-        sK_layout = sm90_utils.make_smem_layout(
-            dtype, LayoutEnum.ROW_MAJOR, (BLOCK, HEAD_DIM), self.kv_stages
+        # One query's rows; groups below the 8-row swizzle atom take the
+        # leading rows of an atom-shaped layout.
+        sQ_row_layout = sm90_utils.make_smem_layout(
+            dtype, LayoutEnum.ROW_MAJOR, (max(self.group, 8), HEAD_DIM)
         )
-        tiled_mma_qk, tiled_mma_pv = _tiled_mmas(warpgroups=1)
+        if cutlass.const_expr(self.group < 8):
+            sQ_row_layout = cute.composition(
+                sQ_row_layout, (cute.make_layout(self.group), cute.make_layout(HEAD_DIM))
+            )
+        sK_layout = sm90_utils.make_smem_layout(
+            dtype, LayoutEnum.ROW_MAJOR, (self.block_size, HEAD_DIM), self.kv_stages
+        )
+        tiled_mma_qk, tiled_mma_pv = _tiled_mmas(warpgroups=1, block_size=self.block_size)
         tma_op = cpasync.CopyBulkTensorTileG2SOp()
         tma_q, mQ = cpasync.make_tiled_tma_atom(
-            tma_op, _packed_q_view(q), sQ_row_layout, ((GROUP, 1), HEAD_DIM)
+            tma_op, _packed_q_view(q, self.group), sQ_row_layout, ((self.group, 1), HEAD_DIM)
         )
         kv_box = cute.select(sK_layout, mode=[0, 1])
         tma_k, mK = cpasync.make_tiled_tma_atom(
-            tma_op, _kv_view(k, self.paged), kv_box, (BLOCK, HEAD_DIM)
+            tma_op, _kv_view(k, self.paged, self.block_size), kv_box, (self.block_size, HEAD_DIM)
         )
         tma_v, mV = cpasync.make_tiled_tma_atom(
-            tma_op, _kv_view(v, self.paged), kv_box, (BLOCK, HEAD_DIM)
+            tma_op, _kv_view(v, self.paged, self.block_size), kv_box, (self.block_size, HEAD_DIM)
         )
         self.q_bytes = cute.size_in_bytes(dtype, cute.select(sQ_layout, mode=[0, 1]))
         self.kv_bytes = cute.size_in_bytes(dtype, kv_box)
@@ -637,6 +668,7 @@ class DynamicAttentionSm90:
             relations,
             partial_out,
             partial_lse,
+            query_limit,
             q.shape[0],
             softmax_scale,
             sQ_layout,
@@ -664,6 +696,7 @@ class DynamicAttentionSm90:
         mRelations: cute.Tensor,
         mPartialOut: cute.Tensor,
         mPartialLse: cute.Tensor,
+        mQueryLimit: cute.Tensor,
         total_q: Int32,
         softmax_scale: Float32,
         sQ_layout: cute.ComposedLayout,
@@ -744,8 +777,8 @@ class DynamicAttentionSm90:
                     token_or_page = mWork[work_idx, 1]
                     list_offset = mWork[work_idx, 2]
                     count = mWork[work_idx, 3]
-                    gK = _kv_blocks(mK, kv_head, token_or_page, self.paged)
-                    gV = _kv_blocks(mV, kv_head, token_or_page, self.paged)
+                    gK = _kv_blocks(mK, kv_head, token_or_page, self.paged, self.block_size)
+                    gV = _kv_blocks(mV, kv_head, token_or_page, self.paged, self.block_size)
                     source = Int32(0)
                     if cutlass.const_expr(self.paged):
                         source = token_or_page
@@ -792,13 +825,15 @@ class DynamicAttentionSm90:
                 self._consume(
                     tiled_mma_qk, tiled_mma_pv, pipeline_q0, pipeline_k, pipeline_v,
                     sQ0, sK, sV, sO_all[None, None, 0], mWork, mRelations, mPartialOut,
-                    mPartialLse, work_count, cta, num_ctas, softmax_scale, wg_tidx, 0,
+                    mPartialLse, mQueryLimit, work_count, cta, num_ctas, total_q,
+                    softmax_scale, wg_tidx, 0,
                 )
             else:
                 self._consume(
                     tiled_mma_qk, tiled_mma_pv, pipeline_q1, pipeline_k, pipeline_v,
                     sQ1, sK, sV, sO_all[None, None, 1], mWork, mRelations, mPartialOut,
-                    mPartialLse, work_count, cta, num_ctas, softmax_scale, wg_tidx, 1,
+                    mPartialLse, mQueryLimit, work_count, cta, num_ctas, total_q,
+                    softmax_scale, wg_tidx, 1,
                 )
 
     @cute.jit
@@ -816,7 +851,7 @@ class DynamicAttentionSm90:
         kv_head: Int32,
         total_q: Int32,
     ) -> None:
-        """TMA-load the 8 query-head rows of each query in one chunk."""
+        """TMA-load the ``group`` query-head rows of each query in one chunk."""
         pipeline_q.producer_acquire(q_state)
         sQ_stage = sQ[None, None, q_state.index]
         for i in cutlass.range_constexpr(self.chunk_queries):
@@ -824,9 +859,9 @@ class DynamicAttentionSm90:
             if slot >= count:
                 slot = count - Int32(1)
             relation = mRelations[list_offset + slot]
-            query = relation // Int32(TOPK) - kv_head * total_q
-            gQ = cute.local_tile(mQ_head, (GROUP, HEAD_DIM), (query, 0))
-            sQ_rows = cute.local_tile(sQ_stage, (GROUP, HEAD_DIM), (i, 0))
+            query = relation // Int32(self.topk) - kv_head * total_q
+            gQ = cute.local_tile(mQ_head, (self.group, HEAD_DIM), (query, 0))
+            sQ_rows = cute.local_tile(sQ_stage, (self.group, HEAD_DIM), (i, 0))
             load_q, _, _ = copy_utils.tma_get_copy_fn(
                 tma_q, 0, cute.make_layout(1), gQ, sQ_rows, single_stage=True
             )
@@ -848,23 +883,26 @@ class DynamicAttentionSm90:
         mRelations: cute.Tensor,
         mPartialOut: cute.Tensor,
         mPartialLse: cute.Tensor,
+        mQueryLimit: cute.Tensor,
         work_count: Int32,
         cta: Int32,
         num_ctas: Int32,
+        total_q: Int32,
         softmax_scale: Float32,
         wg_tidx: Int32,
         warp_group: cutlass.Constexpr[int],
     ) -> None:
+        group = Int32(self.group)
         thr_mma_qk = tiled_mma_qk.get_slice(wg_tidx)
         thr_mma_pv = tiled_mma_pv.get_slice(wg_tidx)
         _, tSrQ, tSrK = sm90_utils.partition_fragment_ABC(
-            thr_mma_qk, (self.wg_rows, BLOCK, HEAD_DIM), sQ, sK
+            thr_mma_qk, (self.wg_rows, self.block_size, HEAD_DIM), sQ, sK
         )
         acc_O, tOrP, tOrVt = sm90_utils.partition_fragment_ABC(
-            thr_mma_pv, (self.wg_rows, HEAD_DIM, BLOCK), None, layout_utils.transpose_view(sV)
+            thr_mma_pv, (self.wg_rows, HEAD_DIM, self.block_size), None, layout_utils.transpose_view(sV)
         )
         s_coords = layout_utils.reshape_acc_to_mn(
-            thr_mma_qk.partition_C(cute.make_identity_tensor((self.wg_rows, BLOCK)))
+            thr_mma_qk.partition_C(cute.make_identity_tensor((self.wg_rows, self.block_size)))
         )
         rows = cute.size(s_coords, mode=[0])
         row_max = cute.make_rmem_tensor((rows,), Float32)
@@ -873,7 +911,7 @@ class DynamicAttentionSm90:
         row_lse = cute.make_rmem_tensor((rows,), Float32)
         scale_log2 = softmax_scale * Float32(LOG2E)
         lane = cute.arch.lane_idx()
-        # 16-byte vector stores: 16 BF16 or 8 FP8 threads cover one 128-dim row.
+        # 16-byte vector stores cover one 128-dim row with 8/16/32 threads.
         vector = 16 * 8 // self.partial_dtype.width
         row_threads = HEAD_DIM // vector
         chunk_col = wg_tidx % Int32(row_threads)
@@ -886,8 +924,10 @@ class DynamicAttentionSm90:
         )
         work_idx = cta
         while work_idx < work_count:
+            kv_head = mWork[work_idx, 0]
             list_offset = mWork[work_idx, 2]
             count = mWork[work_idx, 3]
+            block_first_token = mWork[work_idx, 4]
             pairs = (count + pair_queries - Int32(1)) // pair_queries
             pipeline_k.consumer_wait(kv_state)
             pipeline_v.consumer_wait(kv_state)
@@ -896,7 +936,7 @@ class DynamicAttentionSm90:
                 pipeline_q.consumer_wait(q_state)
                 acc_S = sm90_utils.gemm_zero_init(
                     tiled_mma_qk,
-                    (self.wg_rows, BLOCK),
+                    (self.wg_rows, self.block_size),
                     tSrQ[None, None, None, q_state.index],
                     tSrK,
                     B_idx=kv_state.index,
@@ -904,6 +944,19 @@ class DynamicAttentionSm90:
                 )
                 pipeline_q.consumer_release(q_state)
                 q_state.advance()
+                if cutlass.const_expr(self.masked):
+                    # Causal/KV-length limit of each row's query, relative to the block.
+                    acc_S_mn = layout_utils.reshape_acc_to_mn(acc_S)
+                    for r in cutlass.range_constexpr(rows):
+                        mask_slot = chunk_begin + s_coords[r, 0][0] // group
+                        limit = Int32(self.block_size)
+                        if mask_slot < count:
+                            mask_relation = mRelations[list_offset + mask_slot]
+                            mask_query = mask_relation // Int32(self.topk) - kv_head * total_q
+                            limit = mQueryLimit[mask_query] - block_first_token
+                        for j in cutlass.range_constexpr(cute.size(acc_S_mn, mode=[1])):
+                            if s_coords[r, j][1] > limit:
+                                acc_S_mn[r, j] = -Float32.inf
                 _softmax_rows(acc_S, row_max, row_sum, row_scale, scale_log2, True)
                 tOrP.store(layout_utils.reshape_acc_to_frgA(acc_S).load().to(cutlass.BFloat16))
                 sm90_utils.gemm_w_idx(
@@ -917,20 +970,20 @@ class DynamicAttentionSm90:
                     if lane % Int32(4) == Int32(0):
                         for r in cutlass.range_constexpr(rows):
                             row = s_coords[r, 0][0]
-                            slot = chunk_begin + row // Int32(GROUP)
+                            slot = chunk_begin + row // group
                             if slot < count:
                                 relation = mRelations[list_offset + slot]
-                                mPartialLse[relation, row % Int32(GROUP)] = row_lse[r]
+                                mPartialLse[relation, row % group] = row_lse[r]
                     cute.arch.barrier(barrier_id=barrier_id, number_of_threads=128)
                     rows_per_pass = 128 // row_threads
                     for pass_idx in cutlass.range_constexpr(self.wg_rows // rows_per_pass):
                         row = wg_tidx // Int32(row_threads) + Int32(rows_per_pass * pass_idx)
-                        slot = chunk_begin + row // Int32(GROUP)
+                        slot = chunk_begin + row // group
                         if slot < count:
                             relation = mRelations[list_offset + slot]
                             src = cute.local_tile(sO[row, None], (vector,), (chunk_col,))
                             dst = cute.local_tile(
-                                mPartialOut[relation, row % Int32(GROUP), None],
+                                mPartialOut[relation, row % group, None],
                                 (vector,),
                                 (chunk_col,),
                             )
@@ -942,38 +995,52 @@ class DynamicAttentionSm90:
 
 
 class CombineSm90:
-    """Fold the fixed state and up to 16 dynamic partials per query head."""
+    """Fold an optional initial (fixed) state and up to ``topk`` partials.
 
-    threads = 128
+    One CTA per query; four threads per query head each own 32 dimensions.
+    Partial slots whose route entry is ``-1`` or whose LSE is ``-inf`` (all
+    tokens masked) contribute nothing; a row with no state at all yields zero
+    output and ``-inf`` LSE.
+    """
 
-    def __init__(self, *, fp8_partial: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fp8_partial: bool = False,
+        group: int = GROUP,
+        topk: int = TOPK,
+        has_initial: bool = True,
+    ) -> None:
         self.fp8_partial = bool(fp8_partial)
+        self.group = int(group)
+        self.topk = int(topk)
+        self.has_initial = bool(has_initial)
 
     @cute.jit
     def __call__(
         self,
-        fixed_out: cute.Tensor,  # [Q, 32, 128]
-        fixed_lse: cute.Tensor,  # [Q, 32]
-        partial_out: cute.Tensor,  # [4 * Q * 16, 8, 128]
-        partial_lse: cute.Tensor,  # [4 * Q * 16, 8]
-        route: cute.Tensor,  # [4, Q, 16]
-        out: cute.Tensor,
-        lse: cute.Tensor,
+        initial_out: cute.Tensor,  # [Q, Hkv, group, 128] (any strides)
+        initial_lse: cute.Tensor,  # [Q, Hq] (any strides)
+        partial_out: cute.Tensor,  # [Hkv * Q * topk, group, 128]
+        partial_lse: cute.Tensor,  # [Hkv * Q * topk, group]
+        route: cute.Tensor,  # [Hkv, Q, topk]
+        out: cute.Tensor,  # [Q, Hq, 128]
+        lse: cute.Tensor,  # [Q, Hq]
         stream: cuda.CUstream,
     ) -> None:
         if cutlass.const_expr(self.fp8_partial):
             partial_out = cute.recast_tensor(partial_out, cutlass.Float8E4M3FN)
-        self.kernel(fixed_out, fixed_lse, partial_out, partial_lse, route, out, lse).launch(
-            grid=(fixed_out.shape[0], 1, 1),
-            block=[self.threads, 1, 1],
+        self.kernel(initial_out, initial_lse, partial_out, partial_lse, route, out, lse).launch(
+            grid=(out.shape[0], 1, 1),
+            block=[out.shape[1] * 4, 1, 1],
             stream=stream,
         )
 
     @cute.kernel
     def kernel(
         self,
-        mFixedOut: cute.Tensor,
-        mFixedLse: cute.Tensor,
+        mInitialOut: cute.Tensor,
+        mInitialLse: cute.Tensor,
         mPartialOut: cute.Tensor,
         mPartialLse: cute.Tensor,
         mRoute: cute.Tensor,
@@ -982,31 +1049,44 @@ class CombineSm90:
     ) -> None:
         query, _, _ = cute.arch.block_idx()
         tidx, _, _ = cute.arch.thread_idx()
-        total_q = mFixedOut.shape[0]
+        total_q = mOut.shape[0]
         head = tidx // Int32(4)
         part = tidx % Int32(4)
-        kv_head = head // Int32(GROUP)
-        group_row = head % Int32(GROUP)
-        base_relation = (kv_head * total_q + query) * Int32(TOPK)
+        kv_head = head // Int32(self.group)
+        group_row = head % Int32(self.group)
+        base_relation = (kv_head * total_q + query) * Int32(self.topk)
 
-        lse_values = cute.make_rmem_tensor((TOPK,), Float32)
-        running = mFixedLse[query, head]
-        for slot in cutlass.range_constexpr(TOPK):
+        lse_values = cute.make_rmem_tensor((self.topk,), Float32)
+        initial = -Float32.inf
+        if cutlass.const_expr(self.has_initial):
+            initial = mInitialLse[query, head]
+        running = initial
+        for slot in cutlass.range_constexpr(self.topk):
             value = -Float32.inf
             if mRoute[kv_head, query, slot] >= Int32(0):
                 value = mPartialLse[base_relation + Int32(slot), group_row]
             lse_values[slot] = value
             running = cute.arch.fmax(running, value)
-        weight = cute.math.exp2((mFixedLse[query, head] - running) * Float32(LOG2E), fastmath=True)
-        total = weight
+        # Every -inf contribution gets weight 0, even when all states are empty.
+        shift = running
+        if shift == -Float32.inf:
+            shift = Float32(0.0)
+        total = Float32(0.0)
         acc = cute.make_rmem_tensor((32,), Float32)
-        fixed_vec = cute.make_rmem_tensor((32,), cutlass.BFloat16)
-        cute.autovec_copy(cute.local_tile(mFixedOut[query, head, None], (32,), (part,)), fixed_vec)
-        acc.store(fixed_vec.load().to(Float32) * weight)
+        acc.fill(0.0)
+        if cutlass.const_expr(self.has_initial):
+            if initial != -Float32.inf:
+                total = cute.math.exp2((initial - shift) * Float32(LOG2E), fastmath=True)
+                initial_vec = cute.make_rmem_tensor((32,), cutlass.BFloat16)
+                cute.autovec_copy(
+                    cute.local_tile(mInitialOut[query, kv_head, group_row, None], (32,), (part,)),
+                    initial_vec,
+                )
+                acc.store(initial_vec.load().to(Float32) * total)
         partial_vec = cute.make_rmem_tensor((32,), mPartialOut.element_type)
-        for slot in cutlass.range_constexpr(TOPK):
+        for slot in cutlass.range_constexpr(self.topk):
             if lse_values[slot] != -Float32.inf:
-                w = cute.math.exp2((lse_values[slot] - running) * Float32(LOG2E), fastmath=True)
+                w = cute.math.exp2((lse_values[slot] - shift) * Float32(LOG2E), fastmath=True)
                 total = total + w
                 cute.autovec_copy(
                     cute.local_tile(
@@ -1015,9 +1095,13 @@ class CombineSm90:
                     partial_vec,
                 )
                 acc.store(acc.load() + partial_vec.load().to(Float32) * w)
-        inv = cute.arch.rcp_approx(total)
+        inv = Float32(0.0)
+        merged = -Float32.inf
+        if total > Float32(0.0):
+            inv = cute.arch.rcp_approx(total)
+            merged = shift + cute.math.log2(total, fastmath=True) * Float32(LN2)
         out_vec = cute.make_rmem_tensor((32,), cutlass.BFloat16)
         out_vec.store((acc.load() * inv).to(cutlass.BFloat16))
         cute.autovec_copy(out_vec, cute.local_tile(mOut[query, head, None], (32,), (part,)))
         if part == Int32(0):
-            mLse[query, head] = running + cute.math.log2(total, fastmath=True) * Float32(LN2)
+            mLse[query, head] = merged

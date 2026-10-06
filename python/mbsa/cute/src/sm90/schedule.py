@@ -11,6 +11,11 @@ Three SIMT kernels turn the route [4, Q, 16] into work items:
    rebinding page maps needs no host-side rebuild.
 3. ``ScheduleScatterSm90``: writes each route-entry ID to its CSR position.
 
+The MSA-compatible entry point starts from an existing k2q CSR instead:
+``CsrCountsSm90`` turns row pointers into segment counts for the same scan,
+and ``CsrRelationsSm90`` assigns each (query, KV head) entry a route slot and
+writes its route-entry ID in CSR order.
+
 In-segment order follows atomic arrival. Every partial state depends only on
 its own query rows and block, so outputs remain deterministic.
 """
@@ -79,7 +84,8 @@ class RouteHistogramSm90:
 class ScheduleScanSm90:
     threads = 1024
 
-    def __init__(self, *, work_queries: int, paged: bool = False) -> None:
+    def __init__(self, *, work_queries: int, paged: bool = False, block_size: int = BLOCK) -> None:
+        self.block_size = int(block_size)
         self.work_queries = int(work_queries)
         self.paged = bool(paged)
 
@@ -92,7 +98,7 @@ class ScheduleScanSm90:
         block_row: cute.Tensor,  # [total_blocks] int32 page-table row
         block_local: cute.Tensor,  # [total_blocks] int32 request-local block
         page_table: cute.Tensor,  # [rows, pages] int32
-        work: cute.Tensor,  # [W, 4] int32
+        work: cute.Tensor,  # [W, 5] int32
         work_count: cute.Tensor,  # [1] int32
         total_blocks: Int32,
         stream: cuda.CUstream,
@@ -175,6 +181,7 @@ class ScheduleScanSm90:
                     token_start = mPageTable[mBlockRow[block], mBlockLocal[block]]
             else:
                 token_start = mBlockTokenStart[block]
+            block_first_token = mBlockLocal[block] * Int32(self.block_size)
             # Split a segment into equal-sized items: no tiny tail work.
             items = (n + Int32(self.work_queries - 1)) // Int32(self.work_queries)
             for sub in cutlass.range(items, unroll=1):
@@ -183,6 +190,7 @@ class ScheduleScanSm90:
                 mWork[item_offset, 1] = token_start
                 mWork[item_offset, 2] = count_offset + first
                 mWork[item_offset, 3] = n * (sub + Int32(1)) // items - first
+                mWork[item_offset, 4] = block_first_token
                 item_offset += Int32(1)
             count_offset += n
 
@@ -220,3 +228,107 @@ class ScheduleScatterSm90:
             segment = mSegment[entry]
             if segment >= Int32(0):
                 mRelations[mSegmentStart[segment] + mRank[entry]] = entry
+
+
+class CsrCountsSm90:
+    """Segment counts (KV head x CSR row) from k2q row pointers."""
+
+    threads = 256
+
+    @cute.jit
+    def __call__(
+        self,
+        row_ptr: cute.Tensor,  # [Hkv, rows + 1] int32
+        counts: cute.Tensor,  # [Hkv * rows] int32
+        stream: cuda.CUstream,
+    ) -> None:
+        self.kernel(row_ptr, counts).launch(
+            grid=(cute.ceil_div(counts.shape[0], self.threads), 1, 1),
+            block=[self.threads, 1, 1],
+            stream=stream,
+        )
+
+    @cute.kernel
+    def kernel(self, mRowPtr: cute.Tensor, mCounts: cute.Tensor) -> None:
+        bidx, _, _ = cute.arch.block_idx()
+        tidx, _, _ = cute.arch.thread_idx()
+        segment = bidx * Int32(self.threads) + tidx
+        if segment < mCounts.shape[0]:
+            rows = mRowPtr.shape[1] - Int32(1)
+            head = segment // rows
+            row = segment - head * rows
+            mCounts[segment] = mRowPtr[head, row + Int32(1)] - mRowPtr[head, row]
+
+
+class CsrRelationsSm90:
+    """Assign route slots to k2q CSR entries and emit route-entry IDs.
+
+    One CTA per (KV head, CSR row). CSR query indices are request-local; the
+    row's request recovers the packed query. The route-entry ID is
+    ``(kv_head * total_q + query) * topk + slot``, the partial-state layout
+    consumed by the Dynamic and Combine kernels; ``route`` records the
+    request-local block of every assigned slot.
+    """
+
+    threads = 128
+
+    def __init__(self, *, topk: int) -> None:
+        self.topk = int(topk)
+
+    @cute.jit
+    def __call__(
+        self,
+        row_ptr: cute.Tensor,  # [Hkv, rows + 1]
+        q_indices: cute.Tensor,  # [Hkv, capacity]
+        row_request: cute.Tensor,  # [rows] int32
+        row_block: cute.Tensor,  # [rows] int32
+        cu_seqlens_q: cute.Tensor,  # [B + 1] int32
+        segment_start: cute.Tensor,  # [Hkv * rows] int32 (from the scan)
+        slot_counts: cute.Tensor,  # [Hkv * total_q] int32, zero on entry
+        relations: cute.Tensor,  # [Hkv * total_q * topk] int32
+        route: cute.Tensor,  # [Hkv, total_q, topk] int32, -1 on entry
+        stream: cuda.CUstream,
+    ) -> None:
+        self.kernel(
+            row_ptr, q_indices, row_request, row_block, cu_seqlens_q, segment_start,
+            slot_counts, relations, route,
+        ).launch(
+            grid=(segment_start.shape[0], 1, 1),
+            block=[self.threads, 1, 1],
+            stream=stream,
+        )
+
+    @cute.kernel
+    def kernel(
+        self,
+        mRowPtr: cute.Tensor,
+        mQIndices: cute.Tensor,
+        mRowRequest: cute.Tensor,
+        mRowBlock: cute.Tensor,
+        mCuSeqlensQ: cute.Tensor,
+        mSegmentStart: cute.Tensor,
+        mSlotCounts: cute.Tensor,
+        mRelations: cute.Tensor,
+        mRoute: cute.Tensor,
+    ) -> None:
+        segment, _, _ = cute.arch.block_idx()
+        tidx, _, _ = cute.arch.thread_idx()
+        rows = mRowPtr.shape[1] - Int32(1)
+        total_q = mRoute.shape[1]
+        head = segment // rows
+        row = segment - head * rows
+        begin = mRowPtr[head, row]
+        count = mRowPtr[head, row + Int32(1)] - begin
+        q_base = mCuSeqlensQ[mRowRequest[row]]
+        block = mRowBlock[row]
+        destination = mSegmentStart[segment]
+        for i in cutlass.range(tidx, count, self.threads, unroll=1):
+            query = q_base + mQIndices[head, begin + i]
+            slot = cute.arch.atomic_add(
+                elem_pointer(mSlotCounts, head * total_q + query), Int32(1)
+            )
+            relation = Int32(-1)
+            if slot < Int32(self.topk):
+                relation = (head * total_q + query) * Int32(self.topk) + slot
+                mRoute[head, query, slot] = block
+            mRelations[destination + i] = relation

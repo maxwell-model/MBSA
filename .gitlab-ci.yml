@@ -7,11 +7,11 @@ cpu-and-package:
   script:
     - python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
     - python -m pip install -e '.[dev]'
-    - ruff check python examples tests tools
-    - python tests/test_precision.py
-    - python examples/prefill.py --backend reference
+    - ruff check python tests benchmarks scripts
+    - python -m unittest discover -s tests -v
+    - python -m mbsa.cute.example --backend reference
     - python -m build
-    - python tests/test_precision.py --wheel dist/mbsa-*.whl
+    - python -m tests.smoke.test_packaging --wheel dist/mbsa-*.whl
   artifacts:
     paths:
       - dist/

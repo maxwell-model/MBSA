@@ -1,1 +1,0 @@
-{"package": "/tmp/mbsa-validation-20261003/wheel-install/mbsa/__init__.py", "q": 128, "kv": 4096, "results": [{"backend": "triton", "route_exact": true, "output_max_abs": 0.00048828125, "lse_max_abs": 9.5367431640625e-07}, {"backend": "cutedsl", "route_exact": true, "output_max_abs": 0.0009765625, "lse_max_abs": 1.9073486328125e-06}]}

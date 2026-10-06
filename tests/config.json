@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "index_formats": ["bf16", "fp8", "mxfp8_mxfp6"],
   "name": "BS32 prefill-only KV anchors, Q boundaries and every mixed family",
   "scheduler": {
     "requests": 32,

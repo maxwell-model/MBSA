@@ -8,7 +8,7 @@ __all__ = ["reference_pipeline", "triton_pipeline", "prepare_cutedsl_pipeline"]
 _BACKENDS = {
     "reference_pipeline": ".reference",
     "triton_pipeline": ".triton_backend",
-    "prepare_cutedsl_pipeline": ".cutedsl_backend",
+    "prepare_cutedsl_pipeline": ".api",
 }
 
 
