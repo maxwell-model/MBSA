@@ -1,0 +1,19 @@
+{
+  "package": "flash-attn-4[cu13]",
+  "version": "4.0.0b20",
+  "url": "https://pypi.org/project/flash-attn-4/4.0.0b20/",
+  "wheel": "flash_attn_4-4.0.0b20-py3-none-any.whl",
+  "wheel_sha256": "3ae4c136b55b7dbfef0204b0046e3faf5fa000a3e18e31e159dbe8ba56d0a4cd",
+  "integration": "Installed public dependency plus an attributed SM100 kernel-method synchronization override; no private V2/V3 source used",
+  "source_file": "flash_attn/cute/flash_fwd_sm100.py",
+  "source_file_sha256": "7a5a8f434e3efed7546a2da2d591a13f3644766c9e3abb3aafbb9e82dc4f0eda",
+  "extracted_method": "FlashAttentionForwardSm100.kernel",
+  "extracted_method_lines": [
+    799,
+    1320
+  ],
+  "extracted_method_sha256": "35bfc9e6f92877810a9136de5c25f7f7a316e98229ceaa17eb791d7fdb90416a",
+  "local_file": "python/mbsa/cute/fixed_sync.py",
+  "local_sha256": "398fe2dc2a0506b731d96e1ef129fbfe9dde0de78587ede667e84e35961ce389",
+  "license": "BSD-3-Clause AND Apache-2.0"
+}

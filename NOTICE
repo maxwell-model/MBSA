@@ -1,0 +1,85 @@
+Maxwell Block Sparse Attention (MBSA)
+Source attribution and integration notice
+
+Project licensing
+  Original MBSA code and MBSA-owned modifications are licensed under
+  Apache License 2.0; see LICENSE. Third-party source retains its original
+  license and copyright notices. This project license does not grant rights
+  to upstream code for which no redistribution license has been established.
+  Modified source files carry MBSA integration notices; their original
+  copyright and license headers are preserved.
+
+MiniMax MSA pipeline helpers
+  https://github.com/MiniMax-AI/MSA
+  Only the two pipeline types used by the native Blackwell routers remain in
+  python/mbsa/cute/src/common/pipeline.py, from public commit
+  80434d7f67877c6570ca19cac444b84bc9855dac (MIT). Original headers, LICENSE,
+  NOTICE, source blob and current local hashes remain under third_party/msa/.
+
+Fireworks public KV-outer
+  https://github.com/MiniMax-AI/MSA/tree/fireworks-msa
+  python/mbsa/cute/kvouter/ is based directly on public commit
+  e68899832e125f519d913a49e24571b38146d82b. Index and schedule retain
+  Fireworks AI Apache-2.0 headers; forward/combine retain BSD-3-Clause
+  AND Apache-2.0 headers and FlashAttention-4 source attribution.
+  Component license texts, AUTHORS, upstream NOTICE and source hashes
+  are retained under python/mbsa/third_party/fireworks/.
+  PROVENANCE.md records reusable-buffer, rebind and CUTLASS API adaptations.
+  This publicly sourced backend includes compact selected-slot indexing
+  and tile-ordered partials; these are independent of removed private
+  implementations. Fixed and Dynamic outputs remain separate.
+
+FlashAttention-4 public Fixed dependency and synchronization override
+  https://github.com/Dao-AILab/flash-attention
+  python/mbsa/cute/fixed_attention.py independently constructs exact Fixed
+  block metadata and calls the installed flash-attn-4==4.0.0b20 wrapper.
+  fixed_sync.py derives only the official public SM100 kernel method, with
+  converged TMEM synchronization, guarded configurations and a private JIT
+  cache. BSD-3-Clause license, AUTHORS, wheel/source/method/local hashes and
+  adaptations are recorded under python/mbsa/third_party/fa4/. MBSA changes
+  retain Apache-2.0 attribution. Fixed and Dynamic states remain separate.
+  merge_vectorized.py is an original warp-owned/vector-copy implementation.
+
+DeepGEMM
+  https://github.com/deepseek-ai/DeepGEMM, via maxwell-model/DeepGEMM
+  The MXFP6 decode paged-MQA-logits kernel, its scheduler and the SM100
+  helpers appear under python/mbsa/mxfp6/csrc/. Helpers are reduced to the
+  definitions the scorers use; no DeepGEMM header tree is vendored. Original
+  component license and notices: python/mbsa/third_party/deep_gemm/LICENSE
+  and NOTICE. MBSA adds explicit publication of shared prefix sums in
+  the decode metadata scheduler.
+
+vLLM-derived MXFP6 kernels
+  python/mbsa/mxfp6/ (write.py, scoring.py and the remaining csrc/ files)
+  retains the Apache-2.0 SPDX license and vLLM contributor copyright. Moved
+  from the vLLM Maxwell-V1-Flash branch
+  (vllm/models/maxwell_v1_flash/nvidia/ops/mxfp6/, on top of revision
+  79c28d4d63) with package imports and a framework-neutral build entry point.
+  MBSA fixes native prefill TMEM addressing, operand completion ordering
+  and CTA retirement before allocation release; original licenses remain.
+
+vLLM-derived index codecs
+  python/mbsa/index_formats.py retains its Apache-2.0 SPDX license and vLLM
+  contributor copyright. Adapted from vLLM aip/maxwell-v1-flash revision
+  950d80710610ebffc41128dad89845346262af48,
+  vllm/model_executor/layers/maxwell_moe_index_mxfp6.py, with standalone
+  package integration and reference helpers; see the module source header.
+
+MBSA host attention plan
+  python/mbsa/cute/plan.py is independently implemented MBSA Apache-2.0
+  code from the API, tensor metadata and supported geometry contracts.
+  It replaces the former unverified host-plan implementation. Enum values,
+  dataclass fields, workspace capacities and validation scope are retained;
+  no attention kernel implementation or tuning parameter is included.
+
+MBSA integration
+  Hopper uses its architecture-specific Fixed/Dynamic pipeline. Blackwell
+  uses FA4 Fixed and Fireworks Dynamic, with independent output and LSE states.
+  Native Index routing supports BF16, FP16 and FP8; native MXFP6 requires
+  Blackwell. FP8 partials use the adaptations recorded in component provenance.
+  Installed runtime dependencies retain their own licenses. The independent
+  FP32 correctness oracle is test support and is not shipped in the runtime.
+
+Component license and copyright texts remain authoritative for their sources.
+This notice records attribution; it does not assign a new license to upstream
+code or replace any retained component license.

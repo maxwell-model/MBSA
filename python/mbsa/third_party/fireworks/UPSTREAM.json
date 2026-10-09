@@ -1,0 +1,48 @@
+{
+  "repository": "https://github.com/MiniMax-AI/MSA",
+  "branch": "fireworks-msa",
+  "commit": "e68899832e125f519d913a49e24571b38146d82b",
+  "licenses": [
+    "Apache-2.0",
+    "BSD-3-Clause"
+  ],
+  "flash_attention_source_revision": "6c4f74fb338e0c3cdb07ac6f5eab5f54fc367c15",
+  "files": [
+    {
+      "path": "python/mbsa/cute/kvouter/build_kvouter_index.py",
+      "upstream_path": "python/fmha_sm100/kvouter/build_kvouter_index.py",
+      "upstream_git_blob": "8bc9f0f085431ab074d72986a1a19260621053c2",
+      "upstream_sha256": "87782697255c7ef7c2874fe36a3068fb29505a0e80c14e438ede30ed0e23761c",
+      "local_sha256": "13003deb2fc9dbac30c848d95335d21444cf19cd66842673bee96077142de72e"
+    },
+    {
+      "path": "python/mbsa/cute/kvouter/sparse_fwd_kvouter.py",
+      "upstream_path": "python/fmha_sm100/kvouter/sparse_fwd_kvouter.py",
+      "upstream_git_blob": "a3be8b537aed93617ecc57e403add5021f32335c",
+      "upstream_sha256": "6a8606edb222791a6adb50d1125446285065bf7ba81bb39403fd3e00e9abb0cd",
+      "local_sha256": "1fa20fef73094c1ad04edf00fd2d77b6157d9ee1d9fb2fe0c906e8bd6854e60c"
+    },
+    {
+      "path": "python/mbsa/cute/kvouter/sparse_fwd_kvouter_combine.py",
+      "upstream_path": "python/fmha_sm100/kvouter/sparse_fwd_kvouter_combine.py",
+      "upstream_git_blob": "2fee5db7e5c545cf275fa5277733f7c8e3993bf1",
+      "upstream_sha256": "62b69b51895d9e1b65da91696ea92b7573c541a472f792bd715ee23ffc042a78",
+      "local_sha256": "33a80c84ad44bce71f77a921da7713e68fc6cdc5e32a00aa6741207a6ccc6439"
+    },
+    {
+      "path": "python/mbsa/cute/kvouter/sparse_fwd_kvouter_load_balance_schedule.py",
+      "upstream_path": "python/fmha_sm100/kvouter/sparse_fwd_kvouter_load_balance_schedule.py",
+      "upstream_git_blob": "2f1c47a1a44b2dfbb4a8d918ca9f579314f8e585",
+      "upstream_sha256": "7e007c6629095713bb2e7ce9bbb3fc830245dec3a17a2a8be831dde6716220e3",
+      "local_sha256": "a645c6b55fe5a2e588f806bc157de0c7ac7c342bbc014129835b28b675528bd7"
+    }
+  ],
+  "mbsa_adapter_files": [
+    "python/mbsa/cute/kvouter/__init__.py",
+    "python/mbsa/cute/kvouter/prepared.py"
+  ],
+  "mbsa_adapter_sha256": {
+    "python/mbsa/cute/kvouter/__init__.py": "9600b029ffa9ee712448b7a0b0ad06182b5913e36f0804eb6c0977ce38c044a0",
+    "python/mbsa/cute/kvouter/prepared.py": "9ef7c364396fb2cd92ffc665214b9d5a91ea6dba91f6738276870b8ef8a052a8"
+  }
+}

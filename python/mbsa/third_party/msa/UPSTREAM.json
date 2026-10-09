@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/MiniMax-AI/MSA",
+  "commit": "80434d7f67877c6570ca19cac444b84bc9855dac",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "python/mbsa/cute/src/common/__init__.py",
+      "upstream_path": "python/fmha_sm100/cute/src/common/__init__.py",
+      "upstream_git_blob": "15dfab1c4fc45dcec26ba7489b35624f5c46a698",
+      "local_sha256": "65d0a9ce76e5abd520192360234849a035e993e7af72f1a3bf7186b61c43fe73"
+    },
+    {
+      "path": "python/mbsa/cute/src/common/pipeline.py",
+      "upstream_path": "python/fmha_sm100/cute/src/common/pipeline.py",
+      "upstream_git_blob": "27f711772f5c6fa16a86f4aa305f42a0ca9322eb",
+      "local_sha256": "f5d70b47ee923b5ee99d689862fffe137c55a438415e4e545897ca29f3029297"
+    }
+  ]
+}
