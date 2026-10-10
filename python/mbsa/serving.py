@@ -77,8 +77,10 @@ def unsupported_reason(
         LOCAL_PAGES,
     ):
         return "prefill needs 32 pages a query: 8 prefix, 16 dynamic, 8 local"
-    if kv_dtype != torch.bfloat16:
-        return "prefill needs a BF16 KV cache"
+    if kv_dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+        return "prefill needs a BF16 or FP8 E4M3FN KV cache"
+    if kv_dtype == torch.float8_e4m3fn and tuple(capability) == (9, 0):
+        return "FP8 KV requires native Blackwell FP8 attention"
     if index_format not in INDEX_FORMATS:
         return "prefill needs a BF16, FP16, FP8 or MXFP6 index cache"
     if not math.isclose(softmax_scale, HEAD_DIM**-0.5, rel_tol=1e-6):
@@ -162,8 +164,8 @@ class Limits:
             + KV_HEADS * DYNAMIC_PAGES * (3 + 2 * KV_HEADS) * 4
             # Router partition scores and IDs, including a one-partition copy.
             + 2 * KV_HEADS * (partitions + 1) * DYNAMIC_PAGES * 4
-            # Compact MXFP8 Index-Q.
-            + KV_HEADS * HEAD_DIM
+            # Compact MXFP8 Index-Q and optional shared FP8 attention Q.
+            + (KV_HEADS + Q_HEADS) * HEAD_DIM
             # Scheduler records: native, resized and reordered copies.
             + 3 * 4 * 6 * 4
         )
@@ -208,7 +210,9 @@ class PrefillStep:
         index_q_scales: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Write one layer's BF16 output [total_q,32,128].
-        Q: [total_q,32,128]; K/V: [pages,4,128,128].
+        Q: [total_q,32,128]; K/V: [pages,4,128,128], matching BF16 or E4M3FN.
+        FP8 K/V uses FP8 QK/PV MMA with unit scales; BF16 Q is converted once
+        each run into a shared FP8 buffer, or supply prequantized E4M3FN Q.
         Index Q: [total_q,4,128] BF16/FP16/E4M3, or MXFP8 bytes with int32 scales.
         Index K: [pages,128,128] BF16/FP16/E4M3, or [pages,128,100] uint8 MXFP6."""
         if torch.cuda.is_current_stream_capturing():
@@ -368,8 +372,15 @@ def warmup(
     request_lens: Sequence[tuple[int, int]],
     *,
     index_format: str,
+    kv_dtype: torch.dtype = torch.bfloat16,
+    q_dtype: torch.dtype = torch.bfloat16,
 ) -> None:
-    """Run one geometry on zero-filled dummy caches to compile its kernels."""
+    """Compile one geometry and attention precision on initialized dummy caches."""
+    if kv_dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+        raise ValueError("warmup KV dtype must be BF16 or FP8 E4M3FN")
+    if q_dtype not in ((torch.bfloat16, torch.float8_e4m3fn)
+                       if kv_dtype == torch.float8_e4m3fn else (torch.bfloat16,)):
+        raise ValueError("warmup Q dtype must match the KV precision contract")
     device = prefill.device
     lens = tuple(request_lens)
     total_q = sum(q_len for q_len, _ in lens)
@@ -383,12 +394,12 @@ def warmup(
     shape = ((pages, KV_HEADS, PAGE_SIZE, 2 * HEAD_DIM) if blackwell else
              (pages, PAGE_SIZE, KV_HEADS, 2 * HEAD_DIM))
     kv = torch.zeros(
-        shape, dtype=torch.bfloat16, device=device
+        shape, dtype=kv_dtype, device=device
     )
     k, v = kv.split(HEAD_DIM, dim=-1)
     if not blackwell:
         k, v = (t.permute(0, 2, 1, 3) for t in (k, v))
-    q = torch.zeros(total_q, Q_HEADS, HEAD_DIM, dtype=torch.bfloat16, device=device)
+    q = torch.zeros(total_q, Q_HEADS, HEAD_DIM, dtype=q_dtype, device=device)
     scales = None
     if index_format == "mxfp6":
         index_k = torch.zeros(
@@ -414,7 +425,7 @@ def warmup(
         v,
         index_q=index_q,
         index_k_cache=index_k,
-        out=torch.empty_like(q),
+        out=torch.empty_like(q, dtype=torch.bfloat16),
         index_q_scales=scales,
     )
     if blackwell:

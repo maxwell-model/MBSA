@@ -161,9 +161,9 @@ class CutedslPipeline:
         a.q, a.k, a.v = q, k, v
         a.tile_plan.page_table = page_table
         if getattr(a, "dynamic_kvouter", None) is not None:
-            a.dynamic_kvouter.rebind(q, k, v, page_table)
+            a.dynamic_kvouter.rebind(a.compute_q, k, v, page_table)
         if getattr(a, "fixed_attention", None) is not None:
-            a.fixed_attention.rebind(q, k, v, page_table)
+            a.fixed_attention.rebind(a.compute_q, k, v, page_table)
         if a.fixed_out is a.out:
             a.fixed_out = out
         if a.dynamic_out is a.out:
@@ -266,12 +266,14 @@ def prepare_cutedsl_pipeline(
     partial_dtype: torch.dtype | None = None,
     out: torch.Tensor | None = None,
 ) -> CutedslPipeline:
-    """Prepare BF16 attention on SM90/SM100/SM103 for repeated plan.run() calls.
+    """Prepare BF16 attention, or native FP8 attention on SM100/SM103 for repeated plan.run() calls.
     Q/Index Q are NHD; K/V are NHD or PHTD pages with logical page tables.
     Index operands are matching BF16/FP16/E4M3, or E4M3 Q plus int32 scales and
     uint8 MXFP6 K [pages,1,128,100].
     Packed calls supply CUDA int32 prefix sums and matching host request_lens.
-    Blackwell uses FA4 Fixed and Fireworks Dynamic. BF16 partials are the default."""
+    Blackwell uses FA4 Fixed and Fireworks Dynamic. Matching E4M3FN K/V
+    accepts BF16 Q (converted once per run) or E4M3FN Q, with unit scales.
+    QK and PV use native FP8 MMA; output remains BF16. BF16 partials are the default."""
     if not q.is_cuda:
         raise ValueError("CuTe DSL requires CUDA tensors on SM90, SM100 or SM103")
     capability = torch.cuda.get_device_capability(q.device)
@@ -420,7 +422,7 @@ def prepare_sm100(
         k=k,
         v=v,
         tile_plan=tile_plan,
-        out=torch.empty_like(q) if out is None else out,
+        out=torch.empty_like(q, dtype=torch.bfloat16) if out is None else out,
         partial_dtype=partial_dtype,
         overlap_fixed_score=overlap_fixed_score,
         cu_seqlens_q=cu_seqlens_q,

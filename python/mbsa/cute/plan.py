@@ -58,8 +58,11 @@ class SparseAttentionSpec:
         for condition, message in contracts:
             _require(condition, message)
         _require(self.q_heads % self.kv_heads == 0, "Query heads must divide into KV groups")
-        _require(self.q_dtype == self.kv_dtype == torch.bfloat16,
-                 "This attention specification requires BF16 Q and KV")
+        _require(self.kv_dtype in (torch.bfloat16, torch.float8_e4m3fn),
+                 "This attention specification requires BF16 or E4M3FN KV")
+        _require(self.q_dtype in ((torch.bfloat16, torch.float8_e4m3fn)
+                                  if self.kv_dtype == torch.float8_e4m3fn else (torch.bfloat16,)),
+                 "BF16 KV requires BF16 Q; E4M3FN KV accepts BF16 or E4M3FN Q")
 
 
 SPEC = SparseAttentionSpec()

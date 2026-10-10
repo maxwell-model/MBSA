@@ -89,6 +89,11 @@ class AttentionPlan:
     fixed_attention: Any = None
     dynamic_kvouter: Any = None
     contiguous_cache: Any = None
+    q_fp8: torch.Tensor | None = None
+
+    @property
+    def compute_q(self):
+        return self.q if self.q_fp8 is None else self.q_fp8
 
     @property
     def fixed_backend(self):
@@ -108,6 +113,10 @@ class AttentionPlan:
         self.dynamic_kvouter.run_index()
 
     def run_fixed(self):
+        # Refresh live BF16 Q exactly once before either FP8 consumer. The
+        # Dynamic launch joins the Fixed stream before reading this buffer.
+        if self.q_fp8 is not None:
+            self.q_fp8.copy_(self.q)
         self.fixed_attention.run()
 
     def run_dynamic(self):
@@ -349,7 +358,7 @@ class CutedslPipelinePlan:
                     cache_k = k.view(-1, 128, 4, 128).permute(0, 2, 1, 3)
                     cache_v = v.view(-1, 128, 4, 128).permute(0, 2, 1, 3)
                 table = a.dynamic_kvouter.block_tables
-            a.dynamic_kvouter.rebind(q, cache_k, cache_v, table)
+            a.dynamic_kvouter.rebind(a.compute_q, cache_k, cache_v, table)
         if a.fixed_attention is not None:
             if a.tile_plan.policy == PrefillPolicy.ALIGNED_PAGED:
                 cache_k, cache_v, table = k, v, a.tile_plan.page_table
@@ -361,7 +370,7 @@ class CutedslPipelinePlan:
                     cache_k = k.view(-1, 128, 4, 128).permute(0, 2, 1, 3)
                     cache_v = v.view(-1, 128, 4, 128).permute(0, 2, 1, 3)
                 table = a.fixed_attention.block_tables
-            a.fixed_attention.rebind(q, cache_k, cache_v, table)
+            a.fixed_attention.rebind(a.compute_q, cache_k, cache_v, table)
         a.out = out
         self._record_fixed_stream_tensors(inputs_only=True)
 
@@ -489,8 +498,11 @@ def prepare_attention(q, k, v, tile_plan, *, out, partial_dtype=torch.bfloat16,
                 torch.any(request_pages >= k.shape[0])
             ):
                 raise ValueError("page_table contains a physical page outside k/v")
-    if any(t.dtype != torch.bfloat16 for t in (q, k, v)):
-        raise ValueError("SM100 prefill is BF16-only")
+    if k.dtype != v.dtype or k.dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+        raise ValueError("K/V must have matching BF16 or FP8 E4M3FN dtype")
+    if q.dtype not in ((torch.bfloat16, torch.float8_e4m3fn)
+                       if k.dtype == torch.float8_e4m3fn else (torch.bfloat16,)):
+        raise ValueError("BF16 KV requires BF16 Q; FP8 KV accepts BF16 or E4M3FN Q")
     if not q.is_contiguous() or any(t.device != q.device for t in (k, v)):
         raise ValueError("q must be contiguous and q/k/v must share one CUDA device")
     if tile_plan.policy == PrefillPolicy.ALIGNED_PAGED:
@@ -505,8 +517,8 @@ def prepare_attention(q, k, v, tile_plan, *, out, partial_dtype=torch.bfloat16,
             raise ValueError("paged k/v require positive strides aligned to D rows")
     elif any(not t.is_contiguous() for t in (k, v)):
         raise ValueError("contiguous k/v must be contiguous")
-    if out.shape != q.shape or out.dtype != q.dtype or out.device != q.device:
-        raise ValueError("out must match q")
+    if out.shape != q.shape or out.dtype != torch.bfloat16 or out.device != q.device:
+        raise ValueError("out must be BF16 with Q shape and device")
     if check_device_inputs and tuple(tile_plan.valid_kv_tokens.tolist()) != kv_lens:
         raise ValueError("valid_kv_tokens does not match per-request KV lengths")
     if partial_dtype not in (torch.bfloat16, torch.float8_e4m3fn):
@@ -516,12 +528,15 @@ def prepare_attention(q, k, v, tile_plan, *, out, partial_dtype=torch.bfloat16,
 
     attention = AttentionPlan(
         q=q, k=k, v=v, tile_plan=tile_plan,
-        fixed_out=torch.empty_like(q),
+        fixed_out=torch.empty_like(q, dtype=torch.bfloat16),
         fixed_lse=torch.empty(1, 32, total_q, dtype=torch.float32, device=q.device),
-        dynamic_out=torch.empty_like(q), dynamic_workspace=(), cu_q=cu_q, cu_k=cu_k,
+        dynamic_out=torch.empty_like(q, dtype=torch.bfloat16), dynamic_workspace=(), cu_q=cu_q, cu_k=cu_k,
         fixed_request_ranges=tuple((q_prefix[i], q_prefix[i+1], k_prefix[i], k_prefix[i+1]) for i in range(batch)),
         out=out, out_lse=torch.empty(total_q, 32, dtype=torch.float32, device=q.device),
         max_seqlen_k=skv, batch=batch)
+    if k.dtype == torch.float8_e4m3fn and q.dtype == torch.bfloat16:
+        attention.q_fp8 = q.to(torch.float8_e4m3fn)
+    compute_q = attention.compute_q
     paged = tile_plan.policy == PrefillPolicy.ALIGNED_PAGED
     if paged:
         cache_k, cache_v, table = k, v, tile_plan.page_table
@@ -541,7 +556,7 @@ def prepare_attention(q, k, v, tile_plan, *, out, partial_dtype=torch.bfloat16,
         table = stage_int32(q.device, (table_rows, (batch, max_kv_blocks)))[0]
     identity = not paged and batch == 1 and attention.contiguous_cache is None
     attention.fixed_attention = PreparedFixedAttention(
-        q, cache_k, cache_v, table, tile_plan.valid_kv_tokens,
+        compute_q, cache_k, cache_v, table, tile_plan.valid_kv_tokens,
         tuple(zip(q_lens, kv_lens)), out=attention.fixed_out,
         lse=attention.fixed_lse[0], pack_gqa=True, immutable_table=not paged,
         identity_table=identity, vectorized_paged_mask=not identity,
@@ -550,10 +565,10 @@ def prepare_attention(q, k, v, tile_plan, *, out, partial_dtype=torch.bfloat16,
                                   cu_seqlens_q is None and total_q % 128 == 0))
     if skv > 2048:
         prepared = PreparedKVOuter(
-            q, cache_k, cache_v, tile_plan.dynamic_route.permute(1, 0, 2),
+            compute_q, cache_k, cache_v, tile_plan.dynamic_route.permute(1, 0, 2),
             table, cu_q.to(torch.int64), tile_plan.valid_kv_tokens,
             out=attention.dynamic_out, partial_dtype=partial_dtype,
-            q_load_stage=(3 if partial_dtype == torch.bfloat16 and torch.cuda.get_device_capability(q.device) == (10, 3) else None))
+            q_load_stage=(3 if compute_q.dtype == torch.bfloat16 and partial_dtype == torch.bfloat16 and torch.cuda.get_device_capability(q.device) == (10, 3) else None))
         attention.dynamic_kvouter = prepared
         attention.dynamic_workspace = (prepared.buffers["o_flat"],
                                       prepared.buffers["m_partial"],

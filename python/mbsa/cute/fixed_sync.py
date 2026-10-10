@@ -34,6 +34,7 @@ import flash_attn.cute.pipeline as pipeline_custom
 from flash_attn.cute.seqlen_info import SeqlenInfoQK
 from flash_attn.cute.tile_scheduler import ClcState, TileSchedulerProtocol
 from flash_attn.cute.utils import AuxData
+from flash_attn.cute.softmax import SoftmaxSm100
 from quack.cute_dsl_utils import ParamsBase
 
 
@@ -138,8 +139,9 @@ class SynchronizedFlashAttentionForwardSm100(FlashAttentionForwardSm100):
         """
 
         assert const_expr(blocksparse_tensors is not None), 'Synchronized Fixed FA4 requires block sparsity'
-        assert const_expr(self.q_dtype == cutlass.BFloat16 and self.k_dtype == cutlass.BFloat16
-                          and self.v_dtype == cutlass.BFloat16 and self.o_dtype == cutlass.BFloat16), 'Synchronized Fixed FA4 requires BF16'
+        assert const_expr(self.q_dtype in (cutlass.BFloat16, cutlass.Float8E4M3FN)
+                          and self.k_dtype == self.q_dtype and self.v_dtype == self.q_dtype
+                          and self.o_dtype == cutlass.BFloat16), 'Synchronized Fixed FA4 requires BF16/E4M3FN operands and BF16 output'
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
 
         # Prefetch tma descriptor
@@ -617,6 +619,43 @@ class SynchronizedFlashAttentionForwardSm100(FlashAttentionForwardSm100):
         return
 
 
+class _FixedSoftmaxFactory:
+    """Keep public FP8 P within its representable range before native PV MMA."""
+
+    @staticmethod
+    def create(scale_log2, rescale_threshold=0.0, softmax_scale=None, max_offset=0):
+        # Public FP8 uses exp2(... + 8), so an updated row maximum gives P<=256.
+        # Holding the old maximum for four log2 units can produce P up to4096;
+        # E4M3FN conversion then saturates448 while FP32 row_sum remains exact.
+        # Rescale on every FP8 maximum increase. Preserve BF16's public policy.
+        threshold = 0.0 if max_offset == 8 else rescale_threshold
+        return SoftmaxSm100.create(
+            scale_log2, rescale_threshold=threshold,
+            softmax_scale=softmax_scale, max_offset=max_offset,
+        )
+
+
+@lru_cache(maxsize=1)
+def _fixed_forward_class():
+    """Clone the public softmax method with a private factory; installed state unchanged."""
+    method = inspect.unwrap(FlashAttentionForwardSm100.softmax_loop)
+    namespace = dict(method.__globals__)
+    namespace['SoftmaxSm100'] = _FixedSoftmaxFactory
+    clone = FunctionType(method.__code__, namespace, method.__name__,
+                         method.__defaults__, method.__closure__)
+    clone.__kwdefaults__ = method.__kwdefaults__
+    clone.__annotations__ = method.__annotations__.copy()
+    clone.__module__, clone.__qualname__ = method.__module__, method.__qualname__
+    # If another FA4 call already preprocessed the public function, its code and
+    # DSL metadata must stay paired. Only the namespace is private here.
+    clone.__dict__.update(method.__dict__)
+
+    class FixedForward(SynchronizedFlashAttentionForwardSm100):
+        softmax_loop = cute.jit(clone)
+
+    return FixedForward
+
+
 @lru_cache(maxsize=None)
 def _synchronized_compile_cache(function):
     return {}
@@ -645,7 +684,7 @@ def clone_fixed_forward(function=None):
     """Private class selection and shared private JIT cache; installed state unchanged.
 
     The public compile key does not include the selected Python kernel class.
-    Only clones selecting this synchronized class share compiled kernels;
+    Only clones selecting this synchronized FP8-safe class share compiled kernels;
     the installed wrapper's cache remains separate.
     The returned public code/defaults/closure are unchanged. Its private globals
     select this subclass and refer back to this clone for cache accesses.
@@ -655,7 +694,7 @@ def clone_fixed_forward(function=None):
         from flash_attn.cute.interface import _flash_attn_fwd
         function = _flash_attn_fwd
     namespace = dict(function.__globals__)
-    namespace['FlashAttentionForwardSm100'] = SynchronizedFlashAttentionForwardSm100
+    namespace['FlashAttentionForwardSm100'] = _fixed_forward_class()
     clone = FunctionType(function.__code__, namespace, function.__name__,
                          function.__defaults__, function.__closure__)
     clone.__kwdefaults__ = function.__kwdefaults__

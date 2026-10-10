@@ -5,7 +5,8 @@ NVIDIA Hopper and Blackwell. It combines prefix, sliding-window and dynamically
 selected blocks to reduce attention work while keeping causal masking.
 
 - Paged and contiguous KV caches, packed requests and partial query/KV blocks.
-- BF16 attention with BF16, FP16 or FP8 Index routing; native MXFP6 indexing on Blackwell.
+- BF16 attention, plus native FP8 KV attention on Blackwell.
+- BF16, FP16 or FP8 Index routing; native MXFP6 indexing on Blackwell.
 - Reusable prepared plans, CUDA Graph replay and Fixed/Index routing overlap.
 - Optional FP8 partial outputs and a serving interface for model integration.
 
@@ -61,6 +62,12 @@ output, lse, dynamic_blocks = pipeline.run()
 Prepare once and reuse the plan for the same geometry. Paged inputs provide
 `page_table` and `index_page_indices`; MX indexing also supplies `index_q_scales`.
 Address changes require rebinding before graph capture.
+
+On Blackwell, matching `torch.float8_e4m3fn` K/V caches use native FP8 QK
+and PV Tensor Core computation in both branches, with BF16 output. Supply BF16
+Q to convert it once per run into a shared FP8 buffer, or supply prequantized
+E4M3FN Q. FP8 tensors contain the represented operand values with unit scales;
+additional Q/K/V descale factors are not supported. Hopper attention remains BF16.
 
 BF16 partial outputs are the API default. Pass
 `partial_dtype=torch.float8_e4m3fn` to enable FP8 partials.

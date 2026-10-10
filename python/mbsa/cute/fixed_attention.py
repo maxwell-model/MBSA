@@ -133,7 +133,7 @@ def _make_paged_vector_mask():
 
 
 class PreparedFixedAttention:
-    """Public FA4 BF16 Fixed branch over packed Q and a paged cache.
+    """Public FA4 BF16/FP8 Fixed branch over packed Q and a paged cache.
 
     Q/out: [Tq,Hq,D], K/V: [pages,Hkv,128,D], LSE: [Hq,Tq].
     ``request_lens`` must describe the immutable prepared query/cache lengths.
@@ -169,9 +169,9 @@ class PreparedFixedAttention:
             _compiled_masks[identity_table] = _make_cute_mask(identity_table)
         self._mask_mod = _compiled_masks[identity_table]
         lengths = tuple((int(nq), int(nk)) for nq, nk in request_lens)
-        if (q.ndim != 3 or q.shape[-1] != 128 or q.dtype != torch.bfloat16 or
+        if (q.ndim != 3 or q.shape[-1] != 128 or q.dtype not in (torch.bfloat16, torch.float8_e4m3fn) or
                 not q.is_cuda or not q.is_contiguous()):
-            raise ValueError("Fixed FA4 requires contiguous CUDA BF16 Q [Tq,Hq,128]")
+            raise ValueError("Fixed FA4 requires contiguous CUDA BF16/E4M3FN Q [Tq,Hq,128]")
         if (k_cache.ndim != 4 or k_cache.shape != v_cache.shape or
                 k_cache.shape[2:] != (128, 128) or q.shape[1] % k_cache.shape[1]):
             raise ValueError("Fixed FA4 requires K/V [pages,Hkv,128,128] and integral GQA")
@@ -198,10 +198,10 @@ class PreparedFixedAttention:
                 raise ValueError("static_identity_mask requires fixed used-KV lengths matching request_lens")
         self.q, self.k_cache, self.v_cache = q, k_cache, v_cache
         self.block_tables, self.used_kv_lens = block_tables, used_kv_lens
-        self.out = out if out is not None else torch.empty_like(q)
+        self.out = out if out is not None else torch.empty_like(q, dtype=torch.bfloat16)
         self.lse = lse if lse is not None else torch.empty(q.shape[1], q.shape[0],
                                                          dtype=torch.float32, device=q.device)
-        if (self.out.shape != q.shape or self.out.dtype != q.dtype or self.out.device != q.device or
+        if (self.out.shape != q.shape or self.out.dtype != torch.bfloat16 or self.out.device != q.device or
                 not self.out.is_contiguous() or self.lse.shape != (q.shape[1], q.shape[0]) or
                 self.lse.dtype != torch.float32 or self.lse.device != q.device or
                 not self.lse.is_contiguous()):
@@ -382,8 +382,11 @@ class PreparedFixedAttention:
         ))
         aux = None if self.static_identity_mask else [self.mappings[0][4], self.used_kv_lens]
         self._prepared_forward = next(iter(self._forward.compile_cache.values()))
+        q = self.q.unsqueeze(0)
+        if self.q.dtype == torch.float8_e4m3fn:
+            q, k, v = (t.view(torch.uint8) for t in (q, k, v))
         self._prepared_args = (
-            self.q.unsqueeze(0), k, v, self.out.unsqueeze(0), self.lse.unsqueeze(0),
+            q, k, v, self.out.unsqueeze(0), self.lse.unsqueeze(0),
             128 ** -0.5, *([None] * 9), sparse, AuxData(aux, None),
         )
 
@@ -407,6 +410,8 @@ class PreparedFixedAttention:
             q_view = q.unsqueeze(0)
             k_view = k_cache.permute(0, 2, 1, 3).view(1, -1, k_cache.shape[1], 128)
             v_view = v_cache.permute(0, 2, 1, 3).view(1, -1, v_cache.shape[1], 128)
+            if q.dtype == torch.float8_e4m3fn:
+                q_view, k_view, v_view = (t.view(torch.uint8) for t in (q_view, k_view, v_view))
             self._prepared_args = (q_view, k_view, v_view, *self._prepared_args[3:])
         if table_changed:
             self._refresh_mappings()

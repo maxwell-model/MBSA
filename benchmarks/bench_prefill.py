@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Measure the MBSA prefill pipeline and FA4 dense GQA.
 Sparse totals sum chunk medians.
-Preparation, compilation, projections and cache writes are excluded."""
+Preparation, compilation, projections and cache writes are excluded.
+FP8 KV: native FP8 QK/PV with timed Q conversion; baselines use represented
+Q/K/V decoded to BF16 before timing, not native FP8 baseline kernels."""
 
 from __future__ import annotations
 
@@ -31,6 +33,10 @@ def arguments():
     )
     parser.add_argument("--l2", choices=("cold", "warm"), default="cold")
     parser.add_argument("--seed", type=int, default=17)
+    parser.add_argument(
+        "--kv-dtype", choices=("bf16", "fp8"), default="bf16",
+        help="main KV precision; fp8 is E4M3FN, BF16 Q converts inside the timed MBSA run; baselines use decoded represented BF16 Q/K/V",
+    )
     parser.add_argument(
         "--index-dtype", choices=("bf16", "fp16", "fp8"), default="fp8",
         help="Index Q/K precision; fp8 uses E4M3FN with FP32 score accumulation",
@@ -176,6 +182,13 @@ def run(args):
         "fa4_source_sha256": fa4_sources,
         "l2": args.l2,
         "dtype": "bf16",
+        "kv_dtype": args.kv_dtype,
+        "output_dtype": "bf16",
+        "attention_compute_dtype": args.kv_dtype,
+        "kv_quantization": "BF16 cast to E4M3FN; no scale; excluded from timing" if args.kv_dtype == "fp8" else "none",
+        "query_quantization": "BF16 to E4M3FN inside each timed MBSA run" if args.kv_dtype == "fp8" else "none",
+        "baseline_dtype": "bf16",
+        "baseline_representation": "FP8 Q/K/V decoded exactly to BF16 before timing; BF16 attention baseline, not native FP8" if args.kv_dtype == "fp8" else "original BF16 Q/K/V",
         "index_dtype": args.index_dtype,
         "score_dtype": "fp32",
         "index_quantization": "none" if args.index_dtype == "bf16" else f"BF16 cast to {args.index_dtype}; no scale; excluded from timing",
@@ -217,6 +230,15 @@ def run(args):
     if args.index_dtype != "bf16":
         index_dtype = torch.float16 if args.index_dtype == "fp16" else torch.float8_e4m3fn
         iq, ik = iq.to(index_dtype), ik.to(index_dtype)
+    # Baselines receive the exact values represented by native FP8 attention,
+    # decoded once; conversion is not part of baseline timing. Preserve BF16 Q
+    # for MBSA so its per-run conversion remains part of the measured pipeline.
+    if args.kv_dtype == "fp8":
+        k, v = k.to(torch.float8_e4m3fn), v.to(torch.float8_e4m3fn)
+        baseline_q = q.to(torch.float8_e4m3fn).to(torch.bfloat16)
+        baseline_k, baseline_v = k.to(torch.bfloat16), v.to(torch.bfloat16)
+    else:
+        baseline_q, baseline_k, baseline_v = q, k, v
     flush = (
         torch.zeros(256 << 20, device="cuda", dtype=torch.uint8)
         if args.l2 == "cold"
@@ -225,13 +247,13 @@ def run(args):
 
     def dense(n):
         if flash is not None:
-            out = flash(q[None, :n], k[None, :n], v[None, :n], causal=True)
+            out = flash(baseline_q[None, :n], baseline_k[None, :n], baseline_v[None, :n], causal=True)
             return out[0] if isinstance(out, tuple) else out
         with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
             return torch.nn.functional.scaled_dot_product_attention(
-                q[:n].transpose(0, 1)[None],
-                k[:n].transpose(0, 1)[None],
-                v[:n].transpose(0, 1)[None],
+                baseline_q[:n].transpose(0, 1)[None],
+                baseline_k[:n].transpose(0, 1)[None],
+                baseline_v[:n].transpose(0, 1)[None],
                 is_causal=True,
                 enable_gqa=True,
             ).transpose(1, 2)
@@ -240,9 +262,9 @@ def run(args):
         n = min(args.chunk, 128)
         with sdpa_kernel(SDPBackend.MATH):
             expected = torch.nn.functional.scaled_dot_product_attention(
-                q[:n].transpose(0, 1)[None],
-                k[:n].transpose(0, 1)[None],
-                v[:n].transpose(0, 1)[None],
+                baseline_q[:n].transpose(0, 1)[None],
+                baseline_k[:n].transpose(0, 1)[None],
+                baseline_v[:n].transpose(0, 1)[None],
                 is_causal=True,
                 enable_gqa=True,
             ).transpose(1, 2)
@@ -262,15 +284,17 @@ def run(args):
                 partial_dtype=torch.bfloat16,
             )
             output, lse, remote = pipeline.run()
+            if output.dtype != torch.bfloat16:
+                raise AssertionError("MBSA prefill benchmark requires BF16 output")
             entry = {"chunk": chunk, "kv": end}
             if chunk == 0 or end in args.lengths:
                 probe = slice(args.chunk - 16, args.chunk)
                 eo, el, er = reference_pipeline(
                     iq[end - 16 : end].float(),
                     ik[:end].float(),
-                    q[end - 16 : end],
-                    k[:end],
-                    v[:end],
+                    baseline_q[end - 16 : end],
+                    baseline_k[:end],
+                    baseline_v[:end],
                     query_offset=end - 16,
                 )
                 torch.testing.assert_close(output[probe], eo, atol=0.03, rtol=0.03)
@@ -357,9 +381,11 @@ def plot_results(input_path: Path, output_path: Path):
         "dense_implementation", result["contract"]["dense_backend"]
     )
     index_dtype = result["contract"].get("index_dtype", "bf16")
+    kv_dtype = result["contract"].get("kv_dtype", "bf16")
+    baseline_suffix = " (represented BF16)" if kv_dtype == "fp8" else ""
     fig, ax = plt.subplots(figsize=(10, 6))
     curves = [
-        ("dense_gqa_ms", "Dense GQA", "#929292", "--"),
+        ("dense_gqa_ms", "Dense GQA" + baseline_suffix, "#929292", "--"),
         ("mbsa_ms", "MBSA", "#f04b2d", "-"),
     ]
     for key, label, color, style in curves:
@@ -415,9 +441,13 @@ def plot_results(input_path: Path, output_path: Path):
     fig.text(
         0.08,
         0.035,
-        f"Attention BF16 · Index {index_dtype} · Q/KV heads 32/4 · D=128 · chunk={result['contract']['chunk']} · dense={dense_backend}\nSparse totals sum chunk medians. Preparation, compilation and index quantization excluded.",
+        f"Q input/output BF16 · KV {kv_dtype} · Index {index_dtype} · Q/KV heads 32/4 · D=128 · chunk={result['contract']['chunk']} · dense={dense_backend}\nSparse totals sum chunk medians. Preparation, compilation and index quantization excluded.",
         fontsize=8,
     )
+    if kv_dtype == "fp8":
+        fig.text(0.08, 0.012,
+                 "Baselines: exact represented Q/K/V decoded to BF16 before timing. MBSA: native FP8 QK/PV; Q conversion timed.",
+                 fontsize=7)
     fig.tight_layout(rect=[0, 0.09, 1, 1])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180)

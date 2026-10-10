@@ -24,8 +24,9 @@ wheel URL with the SHA-256 recorded in `UPSTREAM.json` for reproducibility.
 
 The [SM100 synchronization override](../../cute/fixed_sync.py) derives only
 `FlashAttentionForwardSm100.kernel`, lines 799–1320 of the pinned public source.
-It inherits every other method from the installed public base. MBSA's changes
-are limited to TMEM lifecycle synchronization and preparation guards:
+It inherits the installed public base methods and privately clones the public
+`softmax_loop` with its implementation unchanged. MBSA's changes are limited
+to TMEM lifecycle synchronization, preparation guards and an FP8 numerical guard:
 
 - Allocation, allocation-permit release and free execute outside dynamic role
   branches, preserving CUTLASS 4.6 allocator bookkeeping.
@@ -36,8 +37,15 @@ are limited to TMEM lifecycle synchronization and preparation guards:
 - Inactive warps carry a typed null release pointer and do not retrieve an
   unpublished shared-memory TMEM address. Only synchronized participants load
   the actual address; the public allocator internally restricts free to MMA.
-- The override rejects configurations outside D128/BF16, tile128, block sparsity,
-  single CTA, non-CLC, independent epilogue, one split and non-varlen input.
+- The private softmax factory rescales on every FP8 row-maximum increase.
+  The public offset scales probabilities to256; retaining an older maximum
+  for four log2 units can saturate E4M3FN probabilities at448 while the FP32
+  denominator remains unsaturated. The guard prevents that numerator error
+  and preserves the public BF16 rescale policy. Installed classes, factories
+  and caches remain unchanged.
+- The override requires D128 with matching BF16 or E4M3FN Q/K/V operands
+  and BF16 output, tile128, block sparsity, single CTA, non-CLC, independent
+  epilogue, one split and non-varlen input.
   The exact Fixed mask callback handles causality; the public base's causal and
   sliding-window modes are not selected. qstage1 and qstage2 use actual roles.
 
