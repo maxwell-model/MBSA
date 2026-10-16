@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Maxwell Team
 # SPDX-License-Identifier: Apache-2.0
 # Derived from the vLLM Maxwell-V1-Flash fork; modified for MBSA.
-# See third_party/vllm/PROVENANCE.md.
+# See third_party/vllm/NOTICE.
 
 """SM100 packed MXFP6 page scorers: DeepGEMM-derived decode and native prefill.
 Extensions load prebuilt modules or JIT-build from csrc and CUTLASS headers."""

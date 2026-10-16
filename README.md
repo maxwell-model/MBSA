@@ -33,8 +33,13 @@ uv pip install --no-deps 'flash-attn-4==4.0.0b20'
 ```
 
 FA4 b20 is installed separately to use the pinned stable CUTLASS DSL 4.6.0 stack.
-Its upstream metadata requests a development version, so `pip check` reports that
-version mismatch; see [FA4 provenance](python/mbsa/third_party/fa4/PROVENANCE.md).
+Its upstream metadata requests CUTLASS DSL 4.6.0.dev0, which conflicts with this
+validated stable stack: CUTLASS DSL 4.6.0, QuACK 0.6.3 and TVM FFI >=0.1.12,<0.2.
+The separate `--no-deps` step intentionally overrides that dependency pin without
+modifying the official wheel; `pip check` still reports the CUTLASS version
+mismatch. Fixed preparation requires the unmodified official FA4 b20 source
+and checks its version, source content and class binding before launching.
+Preparation and kernel warmup failures propagate instead of silently falling back.
 Native MXFP6 scorers additionally require `nvcc` and CUTLASS headers; set
 `MBSA_CUTLASS_INCLUDE` to the headers' `include` directory when needed.
 
@@ -101,7 +106,7 @@ uv build
 .venv/bin/python -m tests.smoke.test_packaging --wheel dist/mbsa-*.whl
 ```
 
-Core checks cover the FP32 reference, imports, packaging and source attribution.
+Core checks cover the FP32 reference, imports, packaging and bundled license files.
 GPU regressions cover precision, paging, tails, Fixed/Dynamic merging, rebinding
 and CUDA Graph replay. GPU tests require supported hardware and dependencies.
 
@@ -116,7 +121,5 @@ attribution for any third-party code.
 
 Original MBSA code is licensed under [Apache-2.0](LICENSE). Third-party components
 retain their original licenses; see [NOTICE](NOTICE).
-Public source pins and adaptations are recorded for
-[MSA](python/mbsa/third_party/msa/PROVENANCE.md),
-[Fireworks](python/mbsa/third_party/fireworks/PROVENANCE.md) and
-[FlashAttention-4](python/mbsa/third_party/fa4/PROVENANCE.md).
+Source attribution and MBSA modification summaries are retained in that notice
+and the component license directories under `python/mbsa/third_party/`.

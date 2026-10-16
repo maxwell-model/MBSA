@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Maxwell Team
 # SPDX-License-Identifier: Apache-2.0
 # Derived from the vLLM Maxwell-V1-Flash fork; modified for MBSA.
-# See third_party/vllm/PROVENANCE.md.
+# See third_party/vllm/NOTICE.
 
 """MX index codecs adapted from the vLLM Maxwell-V1-Flash fork's
 vllm/model_executor/layers/maxwell_moe_index_mxfp6.py (Apache-2.0)."""

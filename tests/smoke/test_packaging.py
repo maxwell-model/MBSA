@@ -59,7 +59,6 @@ DEEP_GEMM_REQUIRED = (
 )
 
 VLLM_REQUIRED = (
-    "mbsa/third_party/vllm/LICENSE",
     "mbsa/third_party/vllm/NOTICE",
 )
 
@@ -114,6 +113,8 @@ def check_sources():
                             f"{path.relative_to(ROOT)}: missing local module {name}"
                         )
     required = (
+        ROOT / "LICENSE",
+        ROOT / "NOTICE",
         PACKAGE / "third_party/msa/LICENSE",
         PACKAGE / "third_party/msa/NOTICE",
         *(ROOT / "python" / name for name in DEEP_GEMM_REQUIRED),
@@ -171,6 +172,10 @@ def check_wheel(path):
         assert "mbsa/cute/fixed_recorded.py" not in names, "Retired recorded runtime must not ship"
         metadata_paths = [name for name in names if name.endswith(".dist-info/METADATA")]
         assert len(metadata_paths) == 1
+        dist_info = metadata_paths[0].rsplit("/", 1)[0]
+        for filename in ("LICENSE", "NOTICE"):
+            if not {f"{dist_info}/{filename}", f"{dist_info}/licenses/{filename}"} & names:
+                raise AssertionError(f"Wheel is missing project license material: {filename}")
         metadata = wheel.read(metadata_paths[0]).decode()
         assert "Provides-Extra: fireworks" in metadata
         requirements = [line.split(":", 1)[1].strip() for line in metadata.splitlines()

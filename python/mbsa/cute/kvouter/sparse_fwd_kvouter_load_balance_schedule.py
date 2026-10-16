@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Fireworks AI
 # SPDX-License-Identifier: Apache-2.0
 # MBSA integration: reusable buffers, staged launches and CuTe 4.6 compatibility.
-# Public origin and local modifications: mbsa/third_party/fireworks/PROVENANCE.md.
+# Public origin and local modifications: see the MBSA root NOTICE.
 
 """Load-balancing scheduler for the sparse KV-outer attention forward.
 

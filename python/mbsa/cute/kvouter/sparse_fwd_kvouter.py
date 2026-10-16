@@ -13,7 +13,7 @@
 # Copyright (c) 2026 Fireworks AI
 # SPDX-License-Identifier: BSD-3-Clause AND Apache-2.0
 # MBSA integration: reusable buffers, staged launches and CuTe 4.6 compatibility.
-# Public origin and local modifications: mbsa/third_party/fireworks/PROVENANCE.md.
+# Public origin and local modifications: see the MBSA root NOTICE.
 
 """Blackwell (SM100) sparse KV-outer forward — GQA-packed, one tile per work-item.
 

@@ -27,5 +27,4 @@ https://github.com/deepseek-ai/DeepGEMM, via the maxwell-model/DeepGEMM fork
 
 DeepSeek's copyright and MIT license identifiers are retained in each file
 header. Maxwell Team's modifications are released under the same MIT license.
-PROVENANCE.md and UPSTREAM.json record upstream paths, Git blobs and hashes.
 No DeepGEMM or CUTLASS header tree is vendored.

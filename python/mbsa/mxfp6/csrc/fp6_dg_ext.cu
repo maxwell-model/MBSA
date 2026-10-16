@@ -5,7 +5,7 @@
 // Derived from DeepGEMM's paged-MQA-logits operator and host launcher:
 // csrc/jit_kernels/impls/smxx_fp8_fp4_paged_mqa_logits.hpp
 // Adapted for MBSA MXFP6 index scoring; see
-// third_party/deep_gemm/PROVENANCE.md.
+// third_party/deep_gemm/NOTICE.
 
 // DeepGEMM-derived MXFP6 decode launcher for 1..4 queries per request.
 // Reads packed codes/scales and writes per-head page max or sum scores.

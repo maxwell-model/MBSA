@@ -14,7 +14,7 @@ import os
 from functools import partial
 from typing import Type, Optional, Tuple
 # MBSA integration: reusable buffers, staged launches and CuTe 4.6 compatibility.
-# Public origin and local modifications: mbsa/third_party/fireworks/PROVENANCE.md.
+# Public origin and local modifications: see the MBSA root NOTICE.
 
 import cuda.bindings.driver as cuda
 

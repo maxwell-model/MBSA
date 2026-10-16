@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Maxwell Team
 // SPDX-License-Identifier: Apache-2.0
 // Derived from the vLLM Maxwell-V1-Flash fork; modified for MBSA.
-// See third_party/vllm/PROVENANCE.md.
+// See third_party/vllm/NOTICE.
 
 // Torch binding for the MXFP6 scorer; tensor maps are cached by pointer/pages.
 // The cache allocation must outlive any graph capturing its descriptor.

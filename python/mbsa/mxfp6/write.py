@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 Maxwell Team
 # SPDX-License-Identifier: Apache-2.0
 # Derived from the vLLM Maxwell-V1-Flash fork; modified for MBSA.
-# See third_party/vllm/PROVENANCE.md.
+# See third_party/vllm/NOTICE.
 
 """Triton encoders for the packed MXFP6 index K and the MXFP8 index Q."""
 

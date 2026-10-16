@@ -4,7 +4,7 @@
 # ruff: noqa: F841
 # Retain public inactive expressions and the collective TMEM retrieve.
 # MBSA synchronization adaptation of the official flash-attn-4==4.0.0b20 wheel.
-# See ../third_party/fa4/PROVENANCE.md, UPSTREAM.json, LICENSE and AUTHORS.
+# See ../third_party/fa4/LICENSE, AUTHORS and the MBSA root NOTICE.
 """Public FA4 kernel override with converged TMEM lifecycle.
 
 Only the installed public SM100 kernel method is derived here. The installed

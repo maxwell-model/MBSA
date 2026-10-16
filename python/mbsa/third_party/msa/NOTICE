@@ -172,6 +172,14 @@ from cute/src/common/blackwell_helpers.py (7), cute_dsl_utils.py (7, including
 ArgumentsBase), and utils.py (26, including two overload declarations).
 This pruning removes 1,299 definition lines. Retained definitions, imports,
 assignments, and compatibility exports are unchanged. Original copyright
-and license headers remain. PROVENANCE.md describes the local adaptations;
-UPSTREAM.json preserves original upstream Git blob IDs and records the
-updated SHA-256 values of these three local files.
+and license headers remain.
+
+MBSA retains PipelineTmaUmma and PipelineUmmaAsync in
+python/mbsa/cute/src/common/pipeline.py. Package marker files retain upstream
+attribution.
+The CUDA build helper from
+python/fmha_sm100/cute/src/sm100/build_k2q_csr/__init__.py was refactored into
+python/mbsa/_cuda_jit.py, adding shared prebuilt-or-JIT loading, CUDA wheel
+header discovery, architecture flags and CUTLASS include-path discovery.
+MiniMax's copyright and MIT license are retained. Maxwell Team's
+refactoring and extensions are also released under MIT.

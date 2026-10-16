@@ -179,3 +179,19 @@ other trademarks referenced in this project are the property of their
 respective owners. The use of any trademark in this NOTICE or in
 README.md is for identification purposes only and does not imply
 endorsement.
+
+================================================================================
+MBSA integration
+================================================================================
+
+The upstream NOTICE above is retained. MBSA derives its four KV-outer source
+modules from the public python/fmha_sm100/kvouter/ directory of MiniMax-AI/MSA's
+fireworks-msa branch. Fireworks AI, MiniMax and FlashAttention copyright and
+license notices remain in the source headers and accompanying license files.
+
+Modified for MBSA: local imports, optional caller-owned buffers, prepared
+launchers and rebinding, CUTLASS API and TMEM synchronization compatibility,
+paged-tail safety and live strided views. prepared.py is a Maxwell Team adapter.
+MBSA also adds scaled FP8 partial storage; combination restores its per-row
+scale. These partial outputs are an MBSA semantic adaptation, not the
+unmodified upstream ABI. Fixed and Dynamic outputs remain separate.
