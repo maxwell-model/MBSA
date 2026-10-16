@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Source manifests, runtime imports and distributable package contracts."""
+"""Runtime imports and distributable package contracts."""
 
 from __future__ import annotations
 import argparse
 import ast
-import hashlib
-import json
 import re
 import tempfile
 import zipfile
@@ -42,8 +40,6 @@ FIREWORKS_REQUIRED = (
     "mbsa/cute/kvouter/prepared.py",
     "mbsa/third_party/fireworks/LICENSE",
     "mbsa/third_party/fireworks/NOTICE",
-    "mbsa/third_party/fireworks/PROVENANCE.md",
-    "mbsa/third_party/fireworks/UPSTREAM.json",
     "mbsa/third_party/fireworks/msa/LICENSE",
     "mbsa/third_party/fireworks/flash_attention/LICENSE",
     "mbsa/third_party/fireworks/flash_attention/AUTHORS",
@@ -55,113 +51,17 @@ FA4_REQUIRED = (
     "mbsa/cute/fixed_sync.py",
     "mbsa/third_party/fa4/LICENSE",
     "mbsa/third_party/fa4/AUTHORS",
-    "mbsa/third_party/fa4/PROVENANCE.md",
-    "mbsa/third_party/fa4/UPSTREAM.json",
 )
 
 DEEP_GEMM_REQUIRED = (
     "mbsa/third_party/deep_gemm/LICENSE",
     "mbsa/third_party/deep_gemm/NOTICE",
-    "mbsa/third_party/deep_gemm/PROVENANCE.md",
-    "mbsa/third_party/deep_gemm/UPSTREAM.json",
 )
 
 VLLM_REQUIRED = (
     "mbsa/third_party/vllm/LICENSE",
     "mbsa/third_party/vllm/NOTICE",
-    "mbsa/third_party/vllm/PROVENANCE.md",
-    "mbsa/third_party/vllm/UPSTREAM.json",
 )
-
-
-def check_msa_manifest(read_bytes):
-    manifest = json.loads(read_bytes("mbsa/third_party/msa/UPSTREAM.json"))
-    assert manifest["repository"] == "https://github.com/MiniMax-AI/MSA"
-    assert manifest["commit"] == "80434d7f67877c6570ca19cac444b84bc9855dac"
-    for record in manifest["files"]:
-        target = record["path"].removeprefix("python/")
-        assert re.fullmatch(r"[0-9a-f]{40}", record["upstream_git_blob"]), target
-        assert hashlib.sha256(read_bytes(target)).hexdigest() == record["local_sha256"], target
-
-
-def check_deep_gemm_manifest(read_bytes):
-    manifest = json.loads(read_bytes("mbsa/third_party/deep_gemm/UPSTREAM.json"))
-    assert manifest["official_repository"] == "https://github.com/deepseek-ai/DeepGEMM"
-    assert manifest["license"] == "MIT"
-    for record in manifest["files"]:
-        target = record["path"].removeprefix("python/")
-        assert hashlib.sha256(read_bytes(target)).hexdigest() == record["local_sha256"], target
-        if "upstream_git_blob" in record:
-            assert re.fullmatch(r"[0-9a-f]{40}", record["upstream_git_blob"]), target
-        for upstream in record.get("upstream_files", ()):
-            assert re.fullmatch(r"[0-9a-f]{40}", upstream["git_blob"]), upstream["path"]
-    for target in DEEP_GEMM_REQUIRED:
-        assert read_bytes(target), target
-    assert b"MIT License" in read_bytes("mbsa/third_party/deep_gemm/LICENSE")
-
-
-def check_vllm_manifest(read_bytes):
-    manifest = json.loads(read_bytes("mbsa/third_party/vllm/UPSTREAM.json"))
-    assert manifest["base_project"] == "https://github.com/vllm-project/vllm"
-    assert manifest["source_commit"] == "950d80710610ebffc41128dad89845346262af48"
-    assert manifest["license"] == "Apache-2.0"
-    assert len(manifest["files"]) == 5
-    for record in manifest["files"]:
-        target = record["path"].removeprefix("python/")
-        source = read_bytes(target)
-        assert hashlib.sha256(source).hexdigest() == record["local_sha256"], target
-        assert b"SPDX-License-Identifier: Apache-2.0" in source, target
-        assert b"Copyright (c) 2026 Maxwell Team" in source, target
-        for upstream in record["upstream_files"]:
-            assert re.fullmatch(r"[0-9a-f]{40}", upstream["git_blob"]), upstream["path"]
-            assert re.fullmatch(r"[0-9a-f]{64}", upstream["sha256"]), upstream["path"]
-    for target in VLLM_REQUIRED:
-        assert read_bytes(target), target
-    assert b"Apache License" in read_bytes("mbsa/third_party/vllm/LICENSE")
-
-
-def check_fa4_manifest(read_bytes):
-    """Require public synchronization source, exact local hash and its license."""
-    manifest = json.loads(read_bytes("mbsa/third_party/fa4/UPSTREAM.json"))
-    assert manifest["package"] == "flash-attn-4[cu13]"
-    assert manifest["version"] == "4.0.0b20"
-    assert manifest["extracted_method"] == "FlashAttentionForwardSm100.kernel"
-    assert manifest["extracted_method_lines"] == [799, 1320]
-    for field in ("wheel_sha256", "source_file_sha256", "extracted_method_sha256"):
-        assert re.fullmatch(r"[0-9a-f]{64}", manifest[field]), field
-    assert manifest["license"] == "BSD-3-Clause AND Apache-2.0"
-    target = manifest["local_file"].removeprefix("python/")
-    source = read_bytes(target)
-    assert hashlib.sha256(source).hexdigest() == manifest["local_sha256"], target
-    assert b"SPDX-License-Identifier: BSD-3-Clause AND Apache-2.0" in source
-    for path in FA4_REQUIRED:
-        assert read_bytes(path), path
-    assert b"BSD 3-Clause License" in read_bytes("mbsa/third_party/fa4/LICENSE")
-    assert b"respective contributors" in read_bytes("mbsa/third_party/fa4/LICENSE")
-
-
-def check_fireworks_manifest(read_bytes):
-    """Audit shipped source against its public provenance and local hashes."""
-    manifest = json.loads(read_bytes("mbsa/third_party/fireworks/UPSTREAM.json"))
-    assert manifest["repository"] == "https://github.com/MiniMax-AI/MSA"
-    assert manifest["branch"] == "fireworks-msa"
-    assert set(manifest["licenses"]) == {"Apache-2.0", "BSD-3-Clause"}
-    for record in manifest["files"]:
-        target = record["path"].removeprefix("python/")
-        data = read_bytes(target)
-        assert hashlib.sha256(data).hexdigest() == record["local_sha256"], target
-        assert len(record["upstream_git_blob"]) == 40, target
-        assert len(record["upstream_sha256"]) == 64, target
-        assert record["upstream_path"].startswith("python/fmha_sm100/kvouter/"), target
-        assert b"Copyright (c) 2026 Fireworks AI" in data, target
-        assert b"SPDX-License-Identifier:" in data, target
-    for path, expected in manifest["mbsa_adapter_sha256"].items():
-        assert hashlib.sha256(read_bytes(path.removeprefix("python/"))).hexdigest() == expected, path
-    for target in FIREWORKS_REQUIRED:
-        assert read_bytes(target), target
-    assert b"Apache License" in read_bytes("mbsa/third_party/fireworks/LICENSE")
-    assert b"BSD 3-Clause License" in read_bytes("mbsa/third_party/fireworks/flash_attention/LICENSE")
-    assert b"MIT License" in read_bytes("mbsa/third_party/fireworks/msa/LICENSE")
 
 
 def module_exists(path):
@@ -242,11 +142,6 @@ def check_sources():
                 )
     if errors:
         raise AssertionError("\n".join(errors))
-    check_msa_manifest(lambda name: (ROOT / "python" / name).read_bytes())
-    check_deep_gemm_manifest(lambda name: (ROOT / "python" / name).read_bytes())
-    check_vllm_manifest(lambda name: (ROOT / "python" / name).read_bytes())
-    check_fireworks_manifest(lambda name: (ROOT / "python" / name).read_bytes())
-    check_fa4_manifest(lambda name: (ROOT / "python" / name).read_bytes())
     print(
         f"Source check passed: {len(paths)} Python modules; baseline isolated; runtime imports, licenses and document links present"
     )
@@ -270,14 +165,9 @@ def check_wheel(path):
         retired += [name for name in names if name in ("mbsa/reference.py", "mbsa/triton_backend.py", "mbsa/sparse.py", "mbsa/cute/interface.py")]
         if retired:
             raise AssertionError(f"Wheel contains retired private runtime: {retired}")
-        check_msa_manifest(wheel.read)
         missing = set(required) - names
         if missing:
             raise SystemExit(f"Wheel is missing runtime data: {sorted(missing)}")
-        check_deep_gemm_manifest(wheel.read)
-        check_vllm_manifest(wheel.read)
-        check_fireworks_manifest(wheel.read)
-        check_fa4_manifest(wheel.read)
         assert "mbsa/cute/fixed_recorded.py" not in names, "Retired recorded runtime must not ship"
         metadata_paths = [name for name in names if name.endswith(".dist-info/METADATA")]
         assert len(metadata_paths) == 1

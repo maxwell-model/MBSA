@@ -49,7 +49,7 @@ DeepGEMM
   adaptation (fp6_dg_ext.cu), and reduced SM100 helpers appear under
   python/mbsa/mxfp6/csrc/. MBSA adds MXFP6 operands, score outputs, Torch
   integration and explicit publication of shared prefix sums. Original MIT
-  license, notice, pinned paths, commits, Git blobs and hashes are retained
+  license, notice, upstream paths, Git blobs and hashes are retained
   under python/mbsa/third_party/deep_gemm/. No DeepGEMM header tree is
   vendored.
 
