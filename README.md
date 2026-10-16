@@ -40,6 +40,8 @@ modifying the official wheel; `pip check` still reports the CUTLASS version
 mismatch. Fixed preparation requires the unmodified official FA4 b20 source
 and checks its version, source content and class binding before launching.
 Preparation and kernel warmup failures propagate instead of silently falling back.
+See the [FA4 backend details](python/mbsa/third_party/fa4/PROVENANCE.md) for
+source attribution and integration notes.
 Native MXFP6 scorers additionally require `nvcc` and CUTLASS headers; set
 `MBSA_CUTLASS_INCLUDE` to the headers' `include` directory when needed.
 
@@ -123,3 +125,7 @@ Original MBSA code is licensed under [Apache-2.0](LICENSE). Third-party componen
 retain their original licenses; see [NOTICE](NOTICE).
 Source attribution and MBSA modification summaries are retained in that notice
 and the component license directories under `python/mbsa/third_party/`.
+The existing [MSA](python/mbsa/third_party/msa/PROVENANCE.md),
+[Fireworks](python/mbsa/third_party/fireworks/PROVENANCE.md) and
+[FlashAttention-4](python/mbsa/third_party/fa4/PROVENANCE.md) records retain
+their detailed source identities and adaptations.

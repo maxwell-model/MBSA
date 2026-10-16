@@ -21,6 +21,8 @@ MiniMax MSA-derived helpers
   flags and CUTLASS include discovery. MiniMax's copyright and MIT license
   remain; Maxwell Team's adaptations use MIT. Original LICENSE and NOTICE
   texts remain under python/mbsa/third_party/msa/.
+  PROVENANCE.md and UPSTREAM.json in that directory retain source identities
+  and detailed adaptation records.
 
 Fireworks public KV-outer
   https://github.com/MiniMax-AI/MSA/tree/fireworks-msa
@@ -37,6 +39,8 @@ Fireworks public KV-outer
   This publicly sourced backend includes compact selected-slot indexing
   and tile-ordered partials; these are independent of removed private
   implementations. Fixed and Dynamic outputs remain separate.
+  Detailed source and adaptation records remain in the component
+  PROVENANCE.md and UPSTREAM.json.
 
 FlashAttention-4 public Fixed dependency and synchronization override
   https://github.com/Dao-AILab/flash-attention
@@ -52,6 +56,8 @@ FlashAttention-4 public Fixed dependency and synchronization override
   AUTHORS are retained under python/mbsa/third_party/fa4/. MBSA changes retain
   Apache-2.0 attribution. Fixed and Dynamic states remain separate.
   merge_vectorized.py is an original warp-owned/vector-copy implementation.
+  The existing PROVENANCE.md and UPSTREAM.json in the FA4 license directory
+  retain the public source snapshot and integration details.
 
 DeepGEMM
   https://github.com/deepseek-ai/DeepGEMM, via maxwell-model/DeepGEMM

@@ -2,6 +2,6 @@ include LICENSE README.md NOTICE
 recursive-include tests *.py
 recursive-include benchmarks *.py
 recursive-include docs *.svg *.png
-recursive-include python/mbsa/third_party LICENSE NOTICE AUTHORS
+recursive-include python/mbsa/third_party LICENSE NOTICE AUTHORS *.md *.json
 recursive-include python/mbsa/mxfp6/csrc *.cu *.cuh
 global-exclude __pycache__ *.py[cod] .DS_Store ._*
