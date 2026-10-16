@@ -2,11 +2,9 @@
 
 Official repository: <https://github.com/deepseek-ai/DeepGEMM>.
 
-The paged-MQA-logits kernel, scheduler, and public host launcher are pinned to
-official commit `a6b593d2826719dcf4892609af7b84ee23aaf32a`. The reduced SM100
-helper set is pinned to the public
-<https://github.com/maxwell-model/DeepGEMM> fork at commit
-`acc39c15353f46dec5ded3e78687d6ef897eea9d`.
+The paged-MQA-logits kernel, scheduler, and public host launcher derive from
+the official repository. The reduced SM100 helper set derives from the public
+<https://github.com/maxwell-model/DeepGEMM> fork.
 
 ## Local files
 
@@ -27,6 +25,5 @@ helper set is pinned to the public
 
 These four files are DeepGEMM-derived MIT code, not vLLM-derived files.
 DeepSeek's copyright and MIT license are retained. Maxwell Team's adaptations
-are released under the same MIT license. `UPSTREAM.json` records the pinned
-commits, upstream paths and blobs, upstream hashes, relationships, and current
-local hashes.
+are released under the same MIT license. `UPSTREAM.json` records upstream
+paths and Git blobs, upstream hashes, relationships, and current local hashes.

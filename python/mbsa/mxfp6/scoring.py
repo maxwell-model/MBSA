@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-FileCopyrightText: Copyright (c) 2026 Maxwell Team
 # SPDX-License-Identifier: Apache-2.0
-# Derived from the vLLM Maxwell-V1-Flash fork at commit
-# 950d80710610ebffc41128dad89845346262af48; see third_party/vllm/PROVENANCE.md.
+# Derived from the vLLM Maxwell-V1-Flash fork; modified for MBSA.
+# See third_party/vllm/PROVENANCE.md.
 
 """SM100 packed MXFP6 page scorers: DeepGEMM-derived decode and native prefill.
 Extensions load prebuilt modules or JIT-build from csrc and CUTLASS headers."""

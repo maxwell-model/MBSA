@@ -1,11 +1,10 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-FileCopyrightText: Copyright (c) 2026 Maxwell Team
 # SPDX-License-Identifier: Apache-2.0
-# Derived from the vLLM Maxwell-V1-Flash fork at commit
-# 950d80710610ebffc41128dad89845346262af48; see third_party/vllm/PROVENANCE.md.
+# Derived from the vLLM Maxwell-V1-Flash fork; modified for MBSA.
+# See third_party/vllm/PROVENANCE.md.
 
-"""MX index codecs adapted from vLLM aip/maxwell-v1-flash revision
-950d80710610ebffc41128dad89845346262af48,
+"""MX index codecs adapted from the vLLM Maxwell-V1-Flash fork's
 vllm/model_executor/layers/maxwell_moe_index_mxfp6.py (Apache-2.0)."""
 
 import functools

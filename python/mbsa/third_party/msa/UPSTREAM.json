@@ -8,7 +8,7 @@
       "upstream_path": "python/fmha_sm100/cute/src/sm100/build_k2q_csr/__init__.py",
       "upstream_git_blob": "830343e2fab66e423105772322a82e05bd8b29ee",
       "relationship": "derived-and-refactored",
-      "local_sha256": "b0677c6e584deedf7059b8029751db9886b38bde9dc747a427e4b5951874acfc"
+      "local_sha256": "542e55adaba1af06e9289c58174f5fa991fce463fa82299615f26786d8208239"
     },
     {
       "path": "python/mbsa/cute/src/__init__.py",

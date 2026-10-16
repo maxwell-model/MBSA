@@ -10,23 +10,22 @@ https://github.com/deepseek-ai/DeepGEMM, via the maxwell-model/DeepGEMM fork
 (https://github.com/maxwell-model/DeepGEMM):
 
   python/mbsa/mxfp6/csrc/sm100_utils.cuh
-    Definitions from deep_gemm/include/deep_gemm/{common,ptx,mma}/ at
-    maxwell-model/DeepGEMM acc39c15353f46dec5ded3e78687d6ef897eea9d, reduced
-    to what the scorers use.
+    Definitions from deep_gemm/include/deep_gemm/{common,ptx,mma}/ in
+    maxwell-model/DeepGEMM, reduced to what the scorers use.
   python/mbsa/mxfp6/csrc/paged_mqa_logits_scheduler.cuh
-    deep_gemm/include/deep_gemm/scheduler/paged_mqa_logits.cuh at
-    deepseek-ai/DeepGEMM a6b593d2826719dcf4892609af7b84ee23aaf32a, reformatted.
+    deep_gemm/include/deep_gemm/scheduler/paged_mqa_logits.cuh from
+    deepseek-ai/DeepGEMM, reformatted.
   python/mbsa/mxfp6/csrc/sm100_fp6_paged_mqa_logits.cuh
     Derived from deep_gemm/include/deep_gemm/impls/
-    sm100_fp4_paged_mqa_logits.cuh at a6b593d2826719dcf4892609af7b84ee23aaf32a.
+    sm100_fp4_paged_mqa_logits.cuh in deepseek-ai/DeepGEMM.
   python/mbsa/mxfp6/csrc/fp6_dg_ext.cu
     Derived from the public host launcher in csrc/jit_kernels/impls/
-    smxx_fp8_fp4_paged_mqa_logits.hpp at
-    a6b593d2826719dcf4892609af7b84ee23aaf32a. MBSA adds the Torch extension
-    entry point, tensor-map descriptor cache, MXFP6 operands, validation and
+    smxx_fp8_fp4_paged_mqa_logits.hpp in deepseek-ai/DeepGEMM.
+    MBSA adds the Torch extension entry point, tensor-map descriptor cache,
+    MXFP6 operands, validation and
     the page max/sum score interface.
 
 DeepSeek's copyright and MIT license identifiers are retained in each file
 header. Maxwell Team's modifications are released under the same MIT license.
-PROVENANCE.md and UPSTREAM.json record fixed upstream paths, commits, Git
-blobs and hashes. No DeepGEMM or CUTLASS header tree is vendored.
+PROVENANCE.md and UPSTREAM.json record upstream paths, Git blobs and hashes.
+No DeepGEMM or CUTLASS header tree is vendored.

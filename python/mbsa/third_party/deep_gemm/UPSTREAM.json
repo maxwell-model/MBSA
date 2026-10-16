@@ -1,24 +1,20 @@
 {
   "official_repository": "https://github.com/deepseek-ai/DeepGEMM",
-  "official_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
   "helper_repository": "https://github.com/maxwell-model/DeepGEMM",
-  "helper_commit": "acc39c15353f46dec5ded3e78687d6ef897eea9d",
   "license": "MIT",
   "files": [
     {
       "path": "python/mbsa/mxfp6/csrc/fp6_dg_ext.cu",
       "relationship": "derived-and-adapted",
       "upstream_path": "csrc/jit_kernels/impls/smxx_fp8_fp4_paged_mqa_logits.hpp",
-      "upstream_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
       "upstream_git_blob": "409915a15d9e4995e3c90f62c411e84763d033ca",
       "upstream_sha256": "203a15ea42876efe0cf3c57e44e1e63bb73833735794329ac015523a86314353",
-      "local_sha256": "fa9efce57491fb966a8bd5d4bab2200c5c08e158ed469f0859801754180d4a48"
+      "local_sha256": "5cacb1967480f56053762c1e8bbabf734bea664db1315cf3bec7fadf426d71a1"
     },
     {
       "path": "python/mbsa/mxfp6/csrc/sm100_fp6_paged_mqa_logits.cuh",
       "relationship": "derived-and-adapted",
       "upstream_path": "deep_gemm/include/deep_gemm/impls/sm100_fp4_paged_mqa_logits.cuh",
-      "upstream_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
       "upstream_git_blob": "bd19141205b02423f98dbdeac27c8d80feeeacec",
       "upstream_sha256": "f87747abcdaf799d9c266b4113b990efcf93dac0943ce3e5eebaa2a64cca39e0",
       "local_sha256": "25e08d784303e9efb823c4606a0c5d189912ce8c7e9f5c387ac14329da49765a"
@@ -27,7 +23,6 @@
       "path": "python/mbsa/mxfp6/csrc/paged_mqa_logits_scheduler.cuh",
       "relationship": "reformatted-and-modified",
       "upstream_path": "deep_gemm/include/deep_gemm/scheduler/paged_mqa_logits.cuh",
-      "upstream_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
       "upstream_git_blob": "adf1549ec2e82d85f05dd03972205311cc5effe0",
       "upstream_sha256": "e44c53286dd122a025ca43625d8d9fa509d4cea60e86e45c386de6e579db95d3",
       "local_sha256": "00049af4459f3a2512c36b6f7ae81bcb929a64b4e9e816ff9793ea278e664419"
@@ -35,7 +30,6 @@
     {
       "path": "python/mbsa/mxfp6/csrc/sm100_utils.cuh",
       "relationship": "reduced-from-multiple-files",
-      "upstream_commit": "acc39c15353f46dec5ded3e78687d6ef897eea9d",
       "upstream_files": [
         {
           "path": "deep_gemm/include/deep_gemm/common/exception.cuh",

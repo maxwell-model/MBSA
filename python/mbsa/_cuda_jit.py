@@ -4,7 +4,6 @@
 #
 # Derived from MiniMax-AI/MSA:
 # python/fmha_sm100/cute/src/sm100/build_k2q_csr/__init__.py
-# at commit 80434d7f67877c6570ca19cac444b84bc9855dac.
 # Refactored and extended for MBSA; see third_party/msa/PROVENANCE.md.
 
 """Loading and building MBSA's CUDA C++ extensions."""

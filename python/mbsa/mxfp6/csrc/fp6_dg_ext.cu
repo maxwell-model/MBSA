@@ -4,7 +4,6 @@
 //
 // Derived from DeepGEMM's paged-MQA-logits operator and host launcher:
 // csrc/jit_kernels/impls/smxx_fp8_fp4_paged_mqa_logits.hpp
-// at commit a6b593d2826719dcf4892609af7b84ee23aaf32a.
 // Adapted for MBSA MXFP6 index scoring; see
 // third_party/deep_gemm/PROVENANCE.md.
 
