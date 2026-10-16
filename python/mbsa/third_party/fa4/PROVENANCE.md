@@ -3,7 +3,7 @@
 The independent [Fixed metadata adapter](../../cute/fixed_attention.py) calls
 `flash-attn-4[cu13]==4.0.0b20` with the exact Prefix8 union causal Local8 mask.
 Fixed and Dynamic produce separate outputs and LSE for the MBSA state merge.
-No ShopeeLLM V2/V3 implementation body is reused.
+No non-public implementation body is reused.
 
 [UPSTREAM.json](UPSTREAM.json) identifies the official PyPI wheel, its SHA-256,
 the original SM100 source file and the extracted `kernel` method. The
@@ -14,8 +14,8 @@ Installation uses the unmodified official b20 wheel as a separate `--no-deps`
 step after installing the `fireworks` extra. That extra pins stable CUTLASS DSL
 `4.6.0` and QuACK `0.6.3`, with TVM FFI `>=0.1.12,<0.2`. The b20 wheel's
 upstream metadata instead pins CUTLASS DSL `4.6.0.dev0`; ordinary dependency
-resolution cannot combine that pin with the validated stable stack. B300
-validation used PyTorch `2.11.0+cu130`, stable CUTLASS `4.6.0`, QuACK `0.6.3`
+resolution cannot combine that pin with the validated stable stack.
+Validation used PyTorch `2.11.0+cu130`, stable CUTLASS `4.6.0`, QuACK `0.6.3`
 and the official b20 source/version guard. The separate install explicitly
 overrides the upstream dependency pin without modifying the wheel or its
 metadata. `pip check` still reports the CUTLASS metadata mismatch. The
@@ -74,7 +74,7 @@ reads one inverse page ID per aligned KV tile, and refreshes both block IDs and
 the inverse page map with one Triton launch. Fixed and Dynamic states remain
 separate.
 
-B300 numerical, caller-stream, graph, rebind and sanitizer evidence is recorded
+Numerical, caller-stream, graph, rebind and sanitizer evidence is recorded
 separately. Original failing upstream synccheck runs and API-probe sanitizer
 results remain part of the validation record. The source attribution itself
 does not assert a complete pipeline performance gate.

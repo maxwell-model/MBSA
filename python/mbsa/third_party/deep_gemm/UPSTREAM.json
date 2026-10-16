@@ -1,0 +1,89 @@
+{
+  "official_repository": "https://github.com/deepseek-ai/DeepGEMM",
+  "official_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
+  "helper_repository": "https://github.com/maxwell-model/DeepGEMM",
+  "helper_commit": "acc39c15353f46dec5ded3e78687d6ef897eea9d",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "python/mbsa/mxfp6/csrc/fp6_dg_ext.cu",
+      "relationship": "derived-and-adapted",
+      "upstream_path": "csrc/jit_kernels/impls/smxx_fp8_fp4_paged_mqa_logits.hpp",
+      "upstream_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
+      "upstream_git_blob": "409915a15d9e4995e3c90f62c411e84763d033ca",
+      "upstream_sha256": "203a15ea42876efe0cf3c57e44e1e63bb73833735794329ac015523a86314353",
+      "local_sha256": "fa9efce57491fb966a8bd5d4bab2200c5c08e158ed469f0859801754180d4a48"
+    },
+    {
+      "path": "python/mbsa/mxfp6/csrc/sm100_fp6_paged_mqa_logits.cuh",
+      "relationship": "derived-and-adapted",
+      "upstream_path": "deep_gemm/include/deep_gemm/impls/sm100_fp4_paged_mqa_logits.cuh",
+      "upstream_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
+      "upstream_git_blob": "bd19141205b02423f98dbdeac27c8d80feeeacec",
+      "upstream_sha256": "f87747abcdaf799d9c266b4113b990efcf93dac0943ce3e5eebaa2a64cca39e0",
+      "local_sha256": "25e08d784303e9efb823c4606a0c5d189912ce8c7e9f5c387ac14329da49765a"
+    },
+    {
+      "path": "python/mbsa/mxfp6/csrc/paged_mqa_logits_scheduler.cuh",
+      "relationship": "reformatted-and-modified",
+      "upstream_path": "deep_gemm/include/deep_gemm/scheduler/paged_mqa_logits.cuh",
+      "upstream_commit": "a6b593d2826719dcf4892609af7b84ee23aaf32a",
+      "upstream_git_blob": "adf1549ec2e82d85f05dd03972205311cc5effe0",
+      "upstream_sha256": "e44c53286dd122a025ca43625d8d9fa509d4cea60e86e45c386de6e579db95d3",
+      "local_sha256": "00049af4459f3a2512c36b6f7ae81bcb929a64b4e9e816ff9793ea278e664419"
+    },
+    {
+      "path": "python/mbsa/mxfp6/csrc/sm100_utils.cuh",
+      "relationship": "reduced-from-multiple-files",
+      "upstream_commit": "acc39c15353f46dec5ded3e78687d6ef897eea9d",
+      "upstream_files": [
+        {
+          "path": "deep_gemm/include/deep_gemm/common/exception.cuh",
+          "git_blob": "78acf74755f9f1293b50198fbd74d96873354bc3",
+          "sha256": "ab6b2bd75c06c054fbbe97d5897efa7909d380ad531620770c031b3debdf2123"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/common/cute_tie.cuh",
+          "git_blob": "a3a8b62a2823835d14fbbfc26dd603680f2c5a02",
+          "sha256": "872af0b873a9b367c01eaf68c321ddcd9d0f3c26ce7b8d3abfc8a66d89b8ad65"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/common/math.cuh",
+          "git_blob": "9d8e78137d966ae2f9f997dccc32d707d59b8e6b",
+          "sha256": "576e9db1a1889087f77b3f74d74d011bf452f16c0e5c030bdd661e961c074ddc"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/common/utils.cuh",
+          "git_blob": "f2786afc758144ad6237a373c8a798feedd14b64",
+          "sha256": "6791c5cc7bb4f94042bf2ef16d5249b49271746116c48f2c48845a90d4633032"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/common/tma_copy.cuh",
+          "git_blob": "4e3fc7c03c4fdd858435804b6fdaa0944392c15c",
+          "sha256": "aa5ba45a086adab4c14f85c7e8f820978778e1dc4fc06cb43167d8eedcafa199"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/ptx/utils.cuh",
+          "git_blob": "5ef3f46e220250975fffb16734583db64244ba04",
+          "sha256": "8a9d5e03afdeb20f53b1027e9f6f3a2ef45bb33152dba2b61d778684e1716412"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/ptx/ld_st.cuh",
+          "git_blob": "a94a8a5e7170ed8264e404d8a4b0299cf355201d",
+          "sha256": "072effb9ca3011db86becf49e674606b5140c666c65393f311cf06f6bbf3ec78"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/ptx/tcgen05.cuh",
+          "git_blob": "48426dd9da91c8199abbda35202bd46de7bf8229",
+          "sha256": "7760eef80c6a38ee424974f6f48f8923a56465326c159c8a795e6e8f4fa76b42"
+        },
+        {
+          "path": "deep_gemm/include/deep_gemm/mma/sm100.cuh",
+          "git_blob": "f21a09eb7c09b4e99bb17c292f899b935f769e20",
+          "sha256": "439c57d8aa4914c01dcb55a874ace4fdaecec4682ea1099ba36e3cb8b23f41ab"
+        }
+      ],
+      "local_sha256": "ccc3a19e34d080816bfa31b4a0ede1379670a4df91e0d5c9ddbac7a329c78a96"
+    }
+  ]
+}

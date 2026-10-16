@@ -4,6 +4,19 @@
   "license": "MIT",
   "files": [
     {
+      "path": "python/mbsa/_cuda_jit.py",
+      "upstream_path": "python/fmha_sm100/cute/src/sm100/build_k2q_csr/__init__.py",
+      "upstream_git_blob": "830343e2fab66e423105772322a82e05bd8b29ee",
+      "relationship": "derived-and-refactored",
+      "local_sha256": "b0677c6e584deedf7059b8029751db9886b38bde9dc747a427e4b5951874acfc"
+    },
+    {
+      "path": "python/mbsa/cute/src/__init__.py",
+      "upstream_path": "python/fmha_sm100/cute/src/__init__.py",
+      "upstream_git_blob": "15dfab1c4fc45dcec26ba7489b35624f5c46a698",
+      "local_sha256": "4d9b9e363df2ba3c54b8b19f3bd83e4dabe51ceae13d6006a60df52a58ab5363"
+    },
+    {
       "path": "python/mbsa/cute/src/common/__init__.py",
       "upstream_path": "python/fmha_sm100/cute/src/common/__init__.py",
       "upstream_git_blob": "15dfab1c4fc45dcec26ba7489b35624f5c46a698",
@@ -14,6 +27,12 @@
       "upstream_path": "python/fmha_sm100/cute/src/common/pipeline.py",
       "upstream_git_blob": "27f711772f5c6fa16a86f4aa305f42a0ca9322eb",
       "local_sha256": "f5d70b47ee923b5ee99d689862fffe137c55a438415e4e545897ca29f3029297"
+    },
+    {
+      "path": "python/mbsa/cute/src/sm100/__init__.py",
+      "upstream_path": "python/fmha_sm100/cute/src/sm100/__init__.py",
+      "upstream_git_blob": "f23267fe73800d35db382a1919bc28196da5aa8c",
+      "local_sha256": "f95a89143052febc0eb140fde6d3e8fdd5ac8a88feeecf49ba30222e0effc8d0"
     }
   ]
 }

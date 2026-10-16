@@ -7,7 +7,7 @@ The four KV-outer source modules under `mbsa.cute.kvouter` are copied directly
 from this public commit's `python/fmha_sm100/kvouter/` directory. Their original
 copyright and SPDX headers remain. [UPSTREAM.json](UPSTREAM.json) records source
 Git blob IDs, source SHA-256 and resulting local SHA-256. No implementation body
-is copied from ShopeeLLM V2/V3 delivery branches.
+is copied from any non-public delivery branch.
 
 The index and schedule are Apache-2.0 Fireworks AI code. The forward and combine
 retain `BSD-3-Clause AND Apache-2.0`: portions derive from FlashAttention-4
@@ -33,7 +33,7 @@ MBSA adaptations:
 - The MBSA pipeline passes the public `q_load_stage=3` parameter when the device
   capability is SM103 `(10, 3)` and partial storage is BF16. Other devices or
   partial types pass `None` and retain the upstream architecture defaults.
-  This choice comes from independent B300 measurements and changes the
+  This choice comes from independent measurements and changes the
   preparation call only; the four public source modules are unchanged by this
   tuning. It does not reuse V2/V3 context-range dispatch or tuning code.
 - The installed CUTLASS 4.6 MMA helper receives separate A/B dtype arguments.
@@ -66,7 +66,7 @@ FP8 partial storage below. Temperature-scaled LSE is not exposed by this adapter
 FP8 Q/K/V inputs retain the upstream FP8 compute path with BF16 partials.
 
 GPU compatibility, numerical correctness and performance must be established
-using the B300 validation report; this source/provenance file does not assert
+using the validation report; this source/provenance file does not assert
 that the integrated backend has already passed those checks.
 
 The separately attributed Fixed path uses the installed public

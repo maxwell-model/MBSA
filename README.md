@@ -81,8 +81,6 @@ version and configuration, rather than a fresh measurement of the current tree.
 
 ![MBSA historical performance](docs/performance.svg)
 
-[PNG version](docs/performance.png)
-
 Run the prefill benchmark on Blackwell:
 
 ```bash
@@ -106,6 +104,13 @@ uv build
 Core checks cover the FP32 reference, imports, packaging and source attribution.
 GPU regressions cover precision, paging, tails, Fixed/Dynamic merging, rebinding
 and CUDA Graph replay. GPU tests require supported hardware and dependencies.
+
+## Contributing
+
+Issues and pull requests are welcome. For substantial API or kernel changes,
+please open an issue first to discuss the design. Run the relevant validation
+checks before submitting, and preserve applicable copyright, license and source
+attribution for any third-party code.
 
 ## License and sources
 

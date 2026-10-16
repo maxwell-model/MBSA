@@ -1,5 +1,5 @@
 # Copyright (c) 2022, the respective FlashAttention contributors, as shown by AUTHORS.
-# Copyright 2026 MBSA contributors (synchronization adaptations).
+# Copyright 2026 Maxwell Team (synchronization adaptations).
 # SPDX-License-Identifier: BSD-3-Clause AND Apache-2.0
 # ruff: noqa: F841
 # Retain public inactive expressions and the collective TMEM retrieve.

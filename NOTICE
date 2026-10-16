@@ -9,12 +9,15 @@ Project licensing
   Modified source files carry MBSA integration notices; their original
   copyright and license headers are preserved.
 
-MiniMax MSA pipeline helpers
+MiniMax MSA-derived helpers
   https://github.com/MiniMax-AI/MSA
-  Only the two pipeline types used by the native Blackwell routers remain in
-  python/mbsa/cute/src/common/pipeline.py, from public commit
+  python/mbsa/cute/src/common/pipeline.py retains the two pipeline types used
+  by the native Blackwell routers. python/mbsa/_cuda_jit.py was derived and
+  refactored from the CUDA build helper in build_k2q_csr/__init__.py. Package
+  marker files also correspond to the public source. All are traced to commit
   80434d7f67877c6570ca19cac444b84bc9855dac (MIT). Original headers, LICENSE,
-  NOTICE, source blob and current local hashes remain under third_party/msa/.
+  NOTICE, upstream paths, Git blobs and current hashes remain recorded under
+  python/mbsa/third_party/msa/.
 
 Fireworks public KV-outer
   https://github.com/MiniMax-AI/MSA/tree/fireworks-msa
@@ -42,35 +45,36 @@ FlashAttention-4 public Fixed dependency and synchronization override
 
 DeepGEMM
   https://github.com/deepseek-ai/DeepGEMM, via maxwell-model/DeepGEMM
-  The MXFP6 decode paged-MQA-logits kernel, its scheduler and the SM100
-  helpers appear under python/mbsa/mxfp6/csrc/. Helpers are reduced to the
-  definitions the scorers use; no DeepGEMM header tree is vendored. Original
-  component license and notices: python/mbsa/third_party/deep_gemm/LICENSE
-  and NOTICE. MBSA adds explicit publication of shared prefix sums in
-  the decode metadata scheduler.
+  The MXFP6 decode paged-MQA-logits kernel, scheduler, public host-launcher
+  adaptation (fp6_dg_ext.cu), and reduced SM100 helpers appear under
+  python/mbsa/mxfp6/csrc/. MBSA adds MXFP6 operands, score outputs, Torch
+  integration and explicit publication of shared prefix sums. Original MIT
+  license, notice, pinned paths, commits, Git blobs and hashes are retained
+  under python/mbsa/third_party/deep_gemm/. No DeepGEMM header tree is
+  vendored.
 
-vLLM-derived MXFP6 kernels
-  python/mbsa/mxfp6/ (write.py, scoring.py and the remaining csrc/ files)
-  retains the Apache-2.0 SPDX license and vLLM contributor copyright. Moved
-  from the vLLM Maxwell-V1-Flash branch
-  (vllm/models/maxwell_v1_flash/nvidia/ops/mxfp6/, on top of revision
-  79c28d4d63) with package imports and a framework-neutral build entry point.
-  MBSA fixes native prefill TMEM addressing, operand completion ordering
-  and CTA retirement before allocation release; original licenses remain.
+vLLM Maxwell-V1-Flash MXFP6 sources
+  https://github.com/vllm-project/vllm
+  python/mbsa/index_formats.py, python/mbsa/mxfp6/write.py,
+  python/mbsa/mxfp6/scoring.py,
+  python/mbsa/mxfp6/csrc/fp6_index_kernel.cuh and
+  python/mbsa/mxfp6/csrc/fp6_ext.cu derive from the Maxwell-V1-Flash vLLM
+  development fork at commit 950d80710610ebffc41128dad89845346262af48.
+  The fixed source snapshot was private at extraction time; exact paths, Git
+  blobs, source hashes, adaptation relationships and current hashes are
+  recorded under python/mbsa/third_party/vllm/. All five files retain
+  Apache-2.0 and vLLM contributor attribution while identifying Maxwell
+  Team's adaptations. MBSA adds standalone packaging, shared prebuilt-or-JIT
+  loading, safety fixes and its public scoring interface.
 
-vLLM-derived index codecs
-  python/mbsa/index_formats.py retains its Apache-2.0 SPDX license and vLLM
-  contributor copyright. Adapted from vLLM aip/maxwell-v1-flash revision
-  950d80710610ebffc41128dad89845346262af48,
-  vllm/model_executor/layers/maxwell_moe_index_mxfp6.py, with standalone
-  package integration and reference helpers; see the module source header.
-
-MBSA host attention plan
-  python/mbsa/cute/plan.py is independently implemented MBSA Apache-2.0
-  code from the API, tensor metadata and supported geometry contracts.
-  It replaces the former unverified host-plan implementation. Enum values,
-  dataclass fields, workspace capacities and validation scope are retained;
-  no attention kernel implementation or tuning parameter is included.
+Maxwell Team host attention orchestration
+  python/mbsa/cute/plan.py and python/mbsa/cute/prefill.py are Maxwell Team
+  Apache-2.0 host code. plan.py defines the public planning, tensor metadata,
+  validation and workspace contracts; prefill.py prepares and dispatches
+  Fixed, Dynamic and Index work. Neither file contains a GPU kernel
+  implementation. The current Blackwell path uses the separately attributed
+  public FA4 Fixed backend, Fireworks Dynamic backend, MBSA Index router and
+  the original merge_vectorized.py implementation.
 
 MBSA integration
   Hopper uses its architecture-specific Fixed/Dynamic pipeline. Blackwell

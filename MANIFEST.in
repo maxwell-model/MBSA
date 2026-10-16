@@ -1,4 +1,4 @@
-include LICENSE README.md NOTICE .gitlab-ci.yml
+include LICENSE README.md NOTICE
 recursive-include tests *.py
 recursive-include benchmarks *.py
 recursive-include docs *.svg *.png

@@ -1,5 +1,6 @@
+# Copyright 2026 Maxwell Team.
 # SPDX-License-Identifier: Apache-2.0
-"""FA4 Fixed and Fireworks Dynamic with native Blackwell Index routing."""
+"""Maxwell Team host orchestration for FA4 Fixed and Fireworks Dynamic."""
 from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, is_dataclass

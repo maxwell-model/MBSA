@@ -1,9 +1,10 @@
-# Copyright 2026 MBSA contributors.
+# Copyright 2026 Maxwell Team.
 # SPDX-License-Identifier: Apache-2.0
-"""Host metadata contracts for independent Fixed and Dynamic attention.
+"""Maxwell Team host metadata contracts for Fixed and Dynamic attention.
 
-This implementation derives from the MBSA API, tensor layouts and supported
-geometry. It does not include an upstream planning implementation.
+The public implementation preserves MBSA's API, tensor-layout and supported
+geometry contracts while reorganizing validation and workspace planning. It
+does not contain a GPU kernel implementation.
 """
 
 from __future__ import annotations

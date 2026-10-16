@@ -59,6 +59,20 @@ FA4_REQUIRED = (
     "mbsa/third_party/fa4/UPSTREAM.json",
 )
 
+DEEP_GEMM_REQUIRED = (
+    "mbsa/third_party/deep_gemm/LICENSE",
+    "mbsa/third_party/deep_gemm/NOTICE",
+    "mbsa/third_party/deep_gemm/PROVENANCE.md",
+    "mbsa/third_party/deep_gemm/UPSTREAM.json",
+)
+
+VLLM_REQUIRED = (
+    "mbsa/third_party/vllm/LICENSE",
+    "mbsa/third_party/vllm/NOTICE",
+    "mbsa/third_party/vllm/PROVENANCE.md",
+    "mbsa/third_party/vllm/UPSTREAM.json",
+)
+
 
 def check_msa_manifest(read_bytes):
     manifest = json.loads(read_bytes("mbsa/third_party/msa/UPSTREAM.json"))
@@ -68,6 +82,42 @@ def check_msa_manifest(read_bytes):
         target = record["path"].removeprefix("python/")
         assert re.fullmatch(r"[0-9a-f]{40}", record["upstream_git_blob"]), target
         assert hashlib.sha256(read_bytes(target)).hexdigest() == record["local_sha256"], target
+
+
+def check_deep_gemm_manifest(read_bytes):
+    manifest = json.loads(read_bytes("mbsa/third_party/deep_gemm/UPSTREAM.json"))
+    assert manifest["official_repository"] == "https://github.com/deepseek-ai/DeepGEMM"
+    assert manifest["license"] == "MIT"
+    for record in manifest["files"]:
+        target = record["path"].removeprefix("python/")
+        assert hashlib.sha256(read_bytes(target)).hexdigest() == record["local_sha256"], target
+        if "upstream_git_blob" in record:
+            assert re.fullmatch(r"[0-9a-f]{40}", record["upstream_git_blob"]), target
+        for upstream in record.get("upstream_files", ()):
+            assert re.fullmatch(r"[0-9a-f]{40}", upstream["git_blob"]), upstream["path"]
+    for target in DEEP_GEMM_REQUIRED:
+        assert read_bytes(target), target
+    assert b"MIT License" in read_bytes("mbsa/third_party/deep_gemm/LICENSE")
+
+
+def check_vllm_manifest(read_bytes):
+    manifest = json.loads(read_bytes("mbsa/third_party/vllm/UPSTREAM.json"))
+    assert manifest["base_project"] == "https://github.com/vllm-project/vllm"
+    assert manifest["source_commit"] == "950d80710610ebffc41128dad89845346262af48"
+    assert manifest["license"] == "Apache-2.0"
+    assert len(manifest["files"]) == 5
+    for record in manifest["files"]:
+        target = record["path"].removeprefix("python/")
+        source = read_bytes(target)
+        assert hashlib.sha256(source).hexdigest() == record["local_sha256"], target
+        assert b"SPDX-License-Identifier: Apache-2.0" in source, target
+        assert b"Copyright (c) 2026 Maxwell Team" in source, target
+        for upstream in record["upstream_files"]:
+            assert re.fullmatch(r"[0-9a-f]{40}", upstream["git_blob"]), upstream["path"]
+            assert re.fullmatch(r"[0-9a-f]{64}", upstream["sha256"]), upstream["path"]
+    for target in VLLM_REQUIRED:
+        assert read_bytes(target), target
+    assert b"Apache License" in read_bytes("mbsa/third_party/vllm/LICENSE")
 
 
 def check_fa4_manifest(read_bytes):
@@ -166,8 +216,8 @@ def check_sources():
     required = (
         PACKAGE / "third_party/msa/LICENSE",
         PACKAGE / "third_party/msa/NOTICE",
-        PACKAGE / "third_party/deep_gemm/LICENSE",
-        PACKAGE / "third_party/deep_gemm/NOTICE",
+        *(ROOT / "python" / name for name in DEEP_GEMM_REQUIRED),
+        *(ROOT / "python" / name for name in VLLM_REQUIRED),
         *(PACKAGE / "mxfp6/csrc" / name for name in MXFP6_SOURCES),
         *(ROOT / "python" / name for name in FIREWORKS_REQUIRED + FA4_REQUIRED),
     )
@@ -193,6 +243,8 @@ def check_sources():
     if errors:
         raise AssertionError("\n".join(errors))
     check_msa_manifest(lambda name: (ROOT / "python" / name).read_bytes())
+    check_deep_gemm_manifest(lambda name: (ROOT / "python" / name).read_bytes())
+    check_vllm_manifest(lambda name: (ROOT / "python" / name).read_bytes())
     check_fireworks_manifest(lambda name: (ROOT / "python" / name).read_bytes())
     check_fa4_manifest(lambda name: (ROOT / "python" / name).read_bytes())
     print(
@@ -206,8 +258,8 @@ def check_wheel(path):
         "mbsa/cute/src/sm100/mx_router.py",
         "mbsa/third_party/msa/LICENSE",
         "mbsa/third_party/msa/NOTICE",
-        "mbsa/third_party/deep_gemm/LICENSE",
-        "mbsa/third_party/deep_gemm/NOTICE",
+        *DEEP_GEMM_REQUIRED,
+        *VLLM_REQUIRED,
         *(f"mbsa/mxfp6/csrc/{name}" for name in MXFP6_SOURCES),
         *FIREWORKS_REQUIRED,
         *FA4_REQUIRED,
@@ -222,6 +274,8 @@ def check_wheel(path):
         missing = set(required) - names
         if missing:
             raise SystemExit(f"Wheel is missing runtime data: {sorted(missing)}")
+        check_deep_gemm_manifest(wheel.read)
+        check_vllm_manifest(wheel.read)
         check_fireworks_manifest(wheel.read)
         check_fa4_manifest(wheel.read)
         assert "mbsa/cute/fixed_recorded.py" not in names, "Retired recorded runtime must not ship"

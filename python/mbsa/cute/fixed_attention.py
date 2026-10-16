@@ -1,4 +1,4 @@
-# Copyright 2026 MBSA contributors.
+# Copyright 2026 Maxwell Team.
 # SPDX-License-Identifier: Apache-2.0
 """Fixed Prefix8 union causal Local8 using the public FA4 Q-outer kernel.
 

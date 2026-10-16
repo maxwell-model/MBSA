@@ -1,6 +1,12 @@
-// SPDX-License-Identifier: Apache-2.0
-// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-// Modified for MBSA: package integration; see root NOTICE.
+// SPDX-FileCopyrightText: Copyright (c) 2025 DeepSeek
+// SPDX-FileCopyrightText: Copyright (c) 2026 Maxwell Team
+// SPDX-License-Identifier: MIT
+//
+// Derived from DeepGEMM's paged-MQA-logits operator and host launcher:
+// csrc/jit_kernels/impls/smxx_fp8_fp4_paged_mqa_logits.hpp
+// at commit a6b593d2826719dcf4892609af7b84ee23aaf32a.
+// Adapted for MBSA MXFP6 index scoring; see
+// third_party/deep_gemm/PROVENANCE.md.
 
 // DeepGEMM-derived MXFP6 decode launcher for 1..4 queries per request.
 // Reads packed codes/scales and writes per-head page max or sum scores.
@@ -31,7 +37,7 @@ constexpr int KV_STAGES = 3;
 constexpr int SPEC_THREADS = 128;
 constexpr int MATH_THREADS = 256;
 // Scheduler metadata and kernel launch must use the same SM count.
-constexpr int NUM_SMS = 148;  // B300; a different GPU needs this changed
+constexpr int NUM_SMS = 148;  // A different target may require this to change.
 
 // Cache tensor-map descriptors per pointer, rank and shape to avoid repeated
 // cuTensorMapEncodeTiled driver calls on the decode path.

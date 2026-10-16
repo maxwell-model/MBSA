@@ -14,6 +14,6 @@
   ],
   "extracted_method_sha256": "35bfc9e6f92877810a9136de5c25f7f7a316e98229ceaa17eb791d7fdb90416a",
   "local_file": "python/mbsa/cute/fixed_sync.py",
-  "local_sha256": "3b461c8751da2dc4c7931ce51a928c09e3b266fcec2d4e0aaa55d14083a89d37",
+  "local_sha256": "ebc33a1fff8739ceed4354883d029d05ffa8b0d0f6e038a180e0106629fbe361",
   "license": "BSD-3-Clause AND Apache-2.0"
 }

@@ -1,17 +1,17 @@
 # KV FP8 validation — 2026-10-10
 
-Validation ran on NVIDIA B300 at `10.251.209.5` with Python 3.12.14,
+Validation ran in a controlled environment with Python 3.12.14,
 PyTorch 2.11.0+cu130, Triton 3.6.0 and CUTLASS DSL 4.6.0.
 E4M3FN K/V use unit-scale represented values. BF16 Q is converted into a
 persistent E4M3FN buffer on every execution and shared by Fixed and Dynamic;
 prequantized E4M3FN Q is also accepted. Output is BF16. External KV descales
 are not part of this API.
 
-All three branch checkouts passed six numerical regression cases:
+All three validation environments passed six numerical regression cases:
 fixed-only; Dynamic with a KV tail and BF16 Index; FP8 partial output;
 MXFP6 Index; packed requests with live Q updates, layer rebinding and graph
 replay; and a 32K KV context with live BF16 Q updates and Fixed/Router overlap.
-Garena's 32K case explicitly checked the selected 5-WG CLC configuration.
+One additional 32K case explicitly checked the selected 5-WG CLC configuration.
 The oracle computes FP32 attention on the represented FP8 values, applying
 actual selected Dynamic pages, Prefix8, Local8 and token-level causal masks.
 It does not compare routes against an independent router implementation.
@@ -27,7 +27,8 @@ This guard changes no installed dependency or global cache.
 PTX inspection of Fixed and Dynamic attention specializations found 32 and
 16 `kind::f8f6f4` MMA instructions respectively, with zero `kind::f16` MMA
 instructions in either attention kernel. The 4K numerical probe's maximum
-output error was 0.000787 on public and 0.000705 on both Garena checkouts;
+output error was 0.000787 in the public environment and 0.000705 in both
+additional validation environments;
 maximum LSE error was 0.00000191. These observations verify native FP8 QK/PV,
 not a performance claim or a bound for every possible input value.
 
@@ -46,5 +47,5 @@ Three representative BF16 Fixed/overlap/merge regressions also passed after
 the FP8 softmax guard. The local CPU suite passed 54 tests (39 skipped for
 CUDA or optional dependencies).
 
-Final GPU logs, benchmark JSON and compiled-runtime evidence are retained
-on the B300 host under `/data/mbsa-kvfp8-20261010`.
+Final validation logs, benchmark JSON and compiled-runtime evidence are retained
+in internal validation storage and are not included in this repository.

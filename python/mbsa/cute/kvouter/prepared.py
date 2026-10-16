@@ -1,4 +1,4 @@
-# Copyright 2026 MBSA contributors.
+# Copyright 2026 Maxwell Team.
 # SPDX-License-Identifier: Apache-2.0
 """Prepared, separately executable public Fireworks KV-outer stages.
 

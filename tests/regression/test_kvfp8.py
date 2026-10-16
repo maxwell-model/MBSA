@@ -140,8 +140,9 @@ class KVFP8Regression(unittest.TestCase):
         step, operands, table = self.run_case(lengths, index_format="fp8")
         self.assertTrue(step.plan.overlap_fixed_score)
         attention = step.plan.attention
-        # Garena exposes the selected MSA configuration; public KV-Outer has
-        # another scheduler and must not be assigned the same CLC contract.
+        # An additional validation implementation exposes the selected MSA
+        # configuration; public KV-Outer has another scheduler and must not be
+        # assigned the same CLC contract.
         if hasattr(attention, "dynamic_kernel_cfg"):
             cfg = attention.dynamic_kernel_cfg
             self.assertIsNotNone(cfg)
