@@ -1,0 +1,105 @@
+Maxwell Block Sparse Attention (MBSA)
+Source attribution and integration notice
+
+Project licensing
+  Original MBSA code and MBSA-owned modifications are licensed under
+  Apache License 2.0; see LICENSE. Third-party source retains its original
+  license and copyright notices. This project license does not grant rights
+  to upstream code for which no redistribution license has been established.
+  Modified source files carry MBSA integration notices; their original
+  copyright and license headers are preserved.
+
+MiniMax MSA-derived helpers
+  https://github.com/MiniMax-AI/MSA
+  python/mbsa/cute/src/common/pipeline.py retains the two pipeline types used
+  by the native Blackwell routers. python/mbsa/_cuda_jit.py was derived and
+  refactored from the CUDA build helper in build_k2q_csr/__init__.py. Package
+  marker files also correspond to the public source. MBSA retains
+  PipelineTmaUmma and PipelineUmmaAsync and excludes unused helpers and the
+  Main attention/CSR backend. The shared CUDA helper adds prebuilt-or-JIT
+  loading, CUDA wheel-header discovery, architecture selection, template-stub
+  flags and CUTLASS include discovery. MiniMax's copyright and MIT license
+  remain; Maxwell Team's adaptations use MIT. Original LICENSE and NOTICE
+  texts remain under python/mbsa/third_party/msa/.
+  PROVENANCE.md and UPSTREAM.json in that directory retain source identities
+  and detailed adaptation records.
+
+Fireworks public KV-outer
+  https://github.com/MiniMax-AI/MSA/tree/fireworks-msa
+  python/mbsa/cute/kvouter/ derives from the public
+  python/fmha_sm100/kvouter/ modules. Index and schedule retain
+  Fireworks AI Apache-2.0 headers; forward/combine retain BSD-3-Clause
+  AND Apache-2.0 headers and FlashAttention-4 source attribution.
+  Component license texts, AUTHORS and the original upstream NOTICE are
+  retained under python/mbsa/third_party/fireworks/. MBSA adaptations include
+  local imports, reusable caller-owned buffers, prepared launchers and
+  rebinding, CUTLASS API/TMEM synchronization compatibility, paged-tail safety
+  and live strided views. Optional scaled FP8 partial storage is an MBSA
+  semantic adaptation: combination restores the recorded per-row scale.
+  This publicly sourced backend includes compact selected-slot indexing
+  and tile-ordered partials; these are independent of removed private
+  implementations. Fixed and Dynamic outputs remain separate.
+  Detailed source and adaptation records remain in the component
+  PROVENANCE.md and UPSTREAM.json.
+
+FlashAttention-4 public Fixed dependency and synchronization override
+  https://github.com/Dao-AILab/flash-attention
+  python/mbsa/cute/fixed_attention.py independently constructs exact Fixed
+  block metadata and calls the installed flash-attn-4==4.0.0b20 wrapper.
+  fixed_sync.py derives FlashAttentionForwardSm100.kernel from
+  flash_attn/cute/flash_fwd_sm100.py, with
+  converged TMEM synchronization, guarded configurations and a private JIT
+  cache. MBSA adapts TMEM allocation/retirement, role synchronization and FP8
+  row-maximum rescaling, while retaining the public softmax implementation
+  through a private factory. Version, source-content and class-binding guards
+  reject incompatible installed dependencies. BSD-3-Clause LICENSE and
+  AUTHORS are retained under python/mbsa/third_party/fa4/. MBSA changes retain
+  Apache-2.0 attribution. Fixed and Dynamic states remain separate.
+  merge_vectorized.py is an original warp-owned/vector-copy implementation.
+  The existing PROVENANCE.md and UPSTREAM.json in the FA4 license directory
+  retain the public source snapshot and integration details.
+
+DeepGEMM
+  https://github.com/deepseek-ai/DeepGEMM, via maxwell-model/DeepGEMM
+  The MXFP6 decode paged-MQA-logits kernel, scheduler, public host-launcher
+  adaptation (fp6_dg_ext.cu), and reduced SM100 helpers appear under
+  python/mbsa/mxfp6/csrc/. MBSA adds MXFP6 operands, score outputs, Torch
+  integration and explicit publication of shared prefix sums. Original MIT
+  license, notice, upstream paths and adaptation descriptions are retained
+  under python/mbsa/third_party/deep_gemm/. No DeepGEMM header tree is
+  vendored.
+
+vLLM Maxwell-V1-Flash MXFP6 sources
+  https://github.com/vllm-project/vllm
+  python/mbsa/index_formats.py, python/mbsa/mxfp6/write.py,
+  python/mbsa/mxfp6/scoring.py,
+  python/mbsa/mxfp6/csrc/fp6_index_kernel.cuh and
+  python/mbsa/mxfp6/csrc/fp6_ext.cu derive from the Maxwell-V1-Flash vLLM
+  development fork. All five files retain Apache-2.0 and vLLM contributor
+  attribution while identifying Maxwell Team's adaptations. MBSA adds
+  standalone packaging, shared prebuilt-or-JIT loading, safety fixes and its
+  public scoring interface. Copyright, source paths and modification notices
+  are retained in python/mbsa/third_party/vllm/NOTICE. The Apache-2.0 license
+  text is provided in the root LICENSE.
+
+Maxwell Team host attention orchestration
+  python/mbsa/cute/plan.py and python/mbsa/cute/prefill.py are Maxwell Team
+  Apache-2.0 host code. plan.py defines the public planning, tensor metadata,
+  validation and workspace contracts; prefill.py prepares and dispatches
+  Fixed, Dynamic and Index work. Neither file contains a GPU kernel
+  implementation. The current Blackwell path uses the separately attributed
+  public FA4 Fixed backend, Fireworks Dynamic backend, MBSA Index router and
+  the original merge_vectorized.py implementation.
+
+MBSA integration
+  Hopper uses its architecture-specific Fixed/Dynamic pipeline. Blackwell
+  uses FA4 Fixed and Fireworks Dynamic, with independent output and LSE states.
+  Native Index routing supports BF16, FP16 and FP8; native MXFP6 requires
+  Blackwell. Optional FP8 partials use the scaled storage and combination
+  adaptation described above.
+  Installed runtime dependencies retain their own licenses. The independent
+  FP32 correctness oracle is test support and is not shipped in the runtime.
+
+Component license and copyright texts remain authoritative for their sources.
+This notice records attribution; it does not assign a new license to upstream
+code or replace any retained component license.

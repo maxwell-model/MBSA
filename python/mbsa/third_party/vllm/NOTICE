@@ -1,0 +1,26 @@
+vLLM Maxwell-V1-Flash MXFP6 sources
+
+Copyright contributors to the vLLM project.
+Copyright (c) 2026 Maxwell Team.
+
+Base project: https://github.com/vllm-project/vllm
+License: Apache License 2.0; see the MBSA distribution's root LICENSE.
+
+The following MBSA files derive from the Maxwell-V1-Flash vLLM development
+fork:
+
+  python/mbsa/index_formats.py
+    From vllm/model_executor/layers/maxwell_moe_index_mxfp6.py.
+  python/mbsa/mxfp6/write.py
+    From vllm/model_executor/layers/maxwell_moe_mxfp6_write.py.
+  python/mbsa/mxfp6/scoring.py
+    Consolidates maxwell_moe_mxfp6_kernel.py and
+    maxwell_moe_mxfp6_dg_kernel.py.
+  python/mbsa/mxfp6/csrc/fp6_index_kernel.cuh
+    From maxwell_moe_mxfp6_csrc/fp6_index_kernel.cuh.
+  python/mbsa/mxfp6/csrc/fp6_ext.cu
+    From maxwell_moe_mxfp6_csrc/fp6_ext.cu.
+
+Modified for MBSA: standalone packaging, shared prebuilt-or-JIT loading,
+input validation, synchronization and safety fixes, and public scoring APIs.
+MBSA adaptations remain under Apache-2.0.
