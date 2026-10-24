@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 """SM100 MXFP8 Q x packed MXFP6 K router with native UMMA and partition Top-16."""
 
 import cutlass
@@ -8,6 +9,8 @@ import cutlass.utils as utils
 import cutlass.utils.blackwell_helpers as helpers
 import cutlass.utils.blockscaled_layout as bs
 from cutlass import Float32, Int32
+from cutlass.base_dsl.arch import Arch
+from cutlass.base_dsl.dsl import BaseDSL
 import torch
 import cuda.bindings.driver as cuda
 from .router import _dynamic, merge_native_top16
@@ -20,6 +23,7 @@ class Mxfp6IndexerLocalTop16Sm103:
         if partition_blocks not in (64, 128, 256, 512, 1024, 2048, 4096, 8192):
             raise ValueError("invalid MXFP6 partition capacity")
         self.partition_blocks = int(partition_blocks)
+        self.use_load_reduce = BaseDSL._get_dsl().get_arch_enum().is_family_of(Arch.sm_103f)
 
     @cute.jit
     def __call__(self, q, sq, k, pages, metadata, scores, ids, route, stream):
@@ -354,14 +358,14 @@ class Mxfp6IndexerLocalTop16Sm103:
             if warp < 4:
                 identity = cute.make_identity_tensor((128, 128))
                 coords = mma.get_slice(0).partition_C(identity)
-                atom = cute.make_copy_atom(
-                    tcgen05.LdRed32x32bOp(
-                        tcgen05.Repetition.x128,
-                        tcgen05.Pack.NONE,
-                        tcgen05.TmemLoadRedOp.MAX,
-                    ),
-                    Float32,
-                )
+                # Load-reduce is SM103-only; SM100 reduces the same FP32 row.
+                if cutlass.const_expr(self.use_load_reduce):
+                    load_op = tcgen05.LdRed32x32bOp(
+                        tcgen05.Repetition.x128, tcgen05.Pack.NONE,
+                        tcgen05.TmemLoadRedOp.MAX)
+                else:
+                    load_op = tcgen05.Ld32x32bOp(tcgen05.Repetition.x128, tcgen05.Pack.NONE)
+                atom = cute.make_copy_atom(load_op, Float32)
                 cp = tcgen05.make_tmem_copy(atom, acc[(None, None, None, 0)])
                 thr = cp.get_slice(tid)
                 thread_acc = thr.partition_S(acc)
@@ -377,10 +381,18 @@ class Mxfp6IndexerLocalTop16Sm103:
                     stage = count % 2
                     phase = (count // 2) % 2
                     acc_pipe.consumer_wait_w_index_phase(stage, phase)
-                    cute.copy(
-                        cp, thread_acc[(None, None, None, None, stage)], [regs, reduced]
-                    )
-                    page_maximum = reduced[0]
+                    if cutlass.const_expr(self.use_load_reduce):
+                        cute.copy(
+                            cp, thread_acc[(None, None, None, None, stage)], [regs, reduced]
+                        )
+                        page_maximum = reduced[0]
+                    else:
+                        cute.copy(cp, thread_acc[(None, None, None, None, stage)], regs)
+                        cute.arch.fence_view_async_tmem_load()
+                        values = cute.make_tensor(regs.iterator, cute.make_layout(cute.size(regs)))
+                        page_maximum = values[0]
+                        for column in cutlass.range_constexpr(1, cute.size(values)):
+                            page_maximum = cute.arch.fmax(page_maximum, values[column])
                     cute.arch.fence_view_async_tmem_load()
                     acc_pipe.consumer_release_w_index(stage)
                     count += 1

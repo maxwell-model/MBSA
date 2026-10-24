@@ -1,9 +1,12 @@
 # Public FlashAttention-4 Fixed backend
 
+This record covers the original `mbsa.cute` default backend. It is not a
+whole-repository clean-room statement and does not describe the separately
+imported [optimized backend](../../backends/optimized/PROVENANCE.md).
+
 The independent [Fixed metadata adapter](../../cute/fixed_attention.py) calls
 `flash-attn-4[cu13]==4.0.0b20` with the exact Prefix8 union causal Local8 mask.
 Fixed and Dynamic produce separate outputs and LSE for the MBSA state merge.
-No non-public implementation body is reused.
 
 [UPSTREAM.json](UPSTREAM.json) identifies the official PyPI wheel, its SHA-256,
 the original SM100 source file and the extracted `kernel` method. The
@@ -15,7 +18,7 @@ step after installing the `fireworks` extra. That extra pins stable CUTLASS DSL
 `4.6.0` and QuACK `0.6.3`, with TVM FFI `>=0.1.12,<0.2`. The b20 wheel's
 upstream metadata instead pins CUTLASS DSL `4.6.0.dev0`; ordinary dependency
 resolution cannot combine that pin with the validated stable stack.
-Validation used PyTorch `2.11.0+cu130`, stable CUTLASS `4.6.0`, QuACK `0.6.3`
+B300 validation used PyTorch `2.11.0+cu130`, stable CUTLASS `4.6.0`, QuACK `0.6.3`
 and the official b20 source/version guard. The separate install explicitly
 overrides the upstream dependency pin without modifying the wheel or its
 metadata. `pip check` still reports the CUTLASS metadata mismatch. The

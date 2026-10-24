@@ -1,0 +1,616 @@
+{
+  "schema_version": 2,
+  "repository": "https://github.com/ShopeeLLM/sparse_gqa_kernel_opt",
+  "commit": "90eaaca16edafa6cb3888c7a7a2fa11623daa7c0",
+  "license": "Apache-2.0 AND MIT AND BSD-3-Clause",
+  "license_scope": "distributed-component-terms",
+  "source_access": "Historical delivery snapshot; anonymous availability is not asserted.",
+  "source_license_note": "The license expression describes distributed component terms, not a repository-wide grant for the historical snapshot. Original NVIDIA delivery files carried All rights reserved headers; individual distributed file declarations and retained license texts remain authoritative.",
+  "earlier_origin_gaps": [
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/bsa_attn_sm100_blk128.py",
+      "region": "Block-Sparse-Attention API derivation",
+      "repository": "https://github.com/mit-han-lab/Block-Sparse-Attention",
+      "commit": null,
+      "status": "unconfirmed"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/flash_fwd_sm100.py",
+      "region": "CUTLASS FMHA example derivation; a dependency pin is not the source revision",
+      "repository": "https://github.com/NVIDIA/cutlass",
+      "commit": null,
+      "status": "unconfirmed"
+    }
+  ],
+  "files": [
+    {
+      "path": "python/mbsa/backends/optimized/PROVENANCE.md",
+      "relationship": "locally-authored",
+      "license": "Apache-2.0",
+      "local_sha256": "717dbb5f3d2972db957bed9fa58dc2264f2b0cf530fd7bcf3fc725046428bb23"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/kernels/attention.py",
+      "upstream_path": "kernels/unified_block_sparse_prefill.py",
+      "upstream_git_blob": "dbb1be896bb17c80e8c26ad19e30bfae0ebbcfcd",
+      "relationship": "derived-and-modified",
+      "local_sha256": "d466bda14363dbf1315a6730d965546a03b08031efcebc0ce428808556e264d0"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/kernels/plan.py",
+      "upstream_path": "kernels/unified_block_sparse_plan.py",
+      "upstream_git_blob": "41273ef95e56418f510deeb04520a650a8df78fc",
+      "relationship": "derived-and-modified",
+      "local_sha256": "c77a72979e031e3c054fc0a99eed270d2ff6aee1332ac45396129797a8bd59ed"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/kernels/merge.py",
+      "upstream_path": "kernels/anthony_msa_hybrid_bsa_topk32_prefill.py",
+      "upstream_git_blob": "c386402c1eacabed43f6ac0e5db70f69010bb62f",
+      "relationship": "derived-and-modified",
+      "local_sha256": "9b9240cd76c6a386cad57423ddba24fd0acb97353cd01e47cbf41aa0dc1deceb"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/kernels/msa_sparse_attn_prefill.py",
+      "upstream_path": "kernels/msa_sparse_attn_prefill.py",
+      "upstream_git_blob": "4cd400d359e502ff2560b017274bb28fb45c9373",
+      "relationship": "derived-and-modified",
+      "local_sha256": "1248b6e3c637edc1eb21d83d5ffefd0116df45e98eff049569f5459b6ef367c5"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/kernels/msa_block_sparse/_vllm_compat.py",
+      "upstream_path": "kernels/msa_block_sparse/_vllm_compat.py",
+      "upstream_git_blob": "94c099e755ca311a3c4bcb92d4d847791068836e",
+      "relationship": "copied",
+      "local_sha256": "09aa55cb9c7600286a8e5ea113fedb994dfbb640f432293bbbca6cfe9ba2adac"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/kernels/route_padding.py",
+      "upstream_path": "kernels/msa_block_sparse/minimax_index_topk_triton.py",
+      "upstream_git_blob": "d92df2ad72e9708cdcf8b5c03cf1452fc7a7819b",
+      "relationship": "derived-and-modified",
+      "local_sha256": "d7045bf7c491c00b5f24cd8683349b94486ccecac6c96c4d63cec16410e462cc"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/interface.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/interface.py",
+      "upstream_git_blob": "acf502e7e30a5cb5403ce7ca31a8696151d136cc",
+      "relationship": "derived-and-modified",
+      "local_sha256": "3a536e41a2efefb0a55908509473d5b39bb575d72a3c8ac72c64d47df5546036"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/quantize.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/quantize.py",
+      "upstream_git_blob": "4719a4854bc9388b2a866598f9e21c1f14921181",
+      "relationship": "derived-and-modified",
+      "local_sha256": "b05b08e8e55f73e598ac429aa3038890ab04cb1e733c8f56ad97e25c8a7e42d5"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/sparse_index_utils.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/sparse_index_utils.py",
+      "upstream_git_blob": "eb2896929497d14581ad5e9c5e956d4eb12c6d36",
+      "relationship": "derived-and-modified",
+      "local_sha256": "02ddd46d5ff48c856aaae35e46c954af62dda999e515eec0e3426c5dddf2c6ec"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/aot_cache.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/aot_cache.py",
+      "upstream_git_blob": "b86a83be131bfea10bbc514c9eb3cbc7ae01c1e5",
+      "relationship": "derived-and-modified",
+      "local_sha256": "17a4299b001eeb8bc3edbbc8ea32773a4217376daff79cd5869cf00851bd6de4"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/blackwell_helpers.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/blackwell_helpers.py",
+      "upstream_git_blob": "32bea1d33ff60141e02c17b956a095902076c583",
+      "relationship": "derived-and-modified",
+      "local_sha256": "037de65317db5be229c7ecdf137716f39556bfb0d06ab514fdfc70c55b6c1924"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/copy_utils.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/copy_utils.py",
+      "upstream_git_blob": "98ba5f40b7b9543744e663a96bcdf637c7e2a146",
+      "relationship": "copied",
+      "local_sha256": "6c4b726fc3bb67b8c828d8cde444a59e1e1656f75ff2faf965f43103abd2eb30"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/cute_dsl_utils.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/cute_dsl_utils.py",
+      "upstream_git_blob": "e3473fbbf77fa1261abfc8fd960102c70d3e64bd",
+      "relationship": "derived-and-modified",
+      "local_sha256": "2ebd98388c8f662075f1a28f5d8553b3b0032edcc358f51ad33a8f7e76f09bcf"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/fast_math.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/fast_math.py",
+      "upstream_git_blob": "63a8b4a501ac499e372056a07d499832c830b474",
+      "relationship": "copied",
+      "local_sha256": "9eab7a32dcc0b7bba9942e3e91cce005f8a7e201cdb3e412a2e7d1d53b8c67cf"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/mask.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/mask.py",
+      "upstream_git_blob": "bfd2354484506517cabae105457e17b2b8e32c77",
+      "relationship": "derived-and-modified",
+      "local_sha256": "41606e146e1c563a0edaa65d8845994d923728b13b483faaa2a08df8463ea155"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/mma_sm100_desc.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/mma_sm100_desc.py",
+      "upstream_git_blob": "53c58d17f5085d207f2a1d7b6b45d627ff3322e3",
+      "relationship": "derived-and-modified",
+      "local_sha256": "e5838a5b8b586afab919ce24d60098deaa0bd2fb9a4b413314d8998feb074222"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/named_barrier.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/named_barrier.py",
+      "upstream_git_blob": "a7722a471ca011a94d5fd7774224906001979b78",
+      "relationship": "copied",
+      "local_sha256": "e64b4988efa13fcd1f8d347bf7b0ac95419f9b63f2869716e96259acdc88e5b4"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/pack_gqa.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/pack_gqa.py",
+      "upstream_git_blob": "575fdd1004e4ab01c07766e5dd6293427ea4bfde",
+      "relationship": "derived-and-modified",
+      "local_sha256": "7f7ba185340b77f05fbcd8991d880338e614411fce1cbcec0fdf9a3df69f567d"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/paged_kv.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/paged_kv.py",
+      "upstream_git_blob": "2c5f6923c42a826d4f3dd1f192ce2fdb38eefbf5",
+      "relationship": "copied",
+      "local_sha256": "8f4ffab2d4f5039b845402c45ff19a4216162227bee8ba46b1e016f1a4221db9"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/pipeline.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/pipeline.py",
+      "upstream_git_blob": "27f711772f5c6fa16a86f4aa305f42a0ca9322eb",
+      "relationship": "copied",
+      "local_sha256": "30815fa030c3f05b3ffd241247e27323fd0c275a8f1a6976f7b46d6c2daa3d15"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/seqlen_info.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/seqlen_info.py",
+      "upstream_git_blob": "0a2a85ac222dc7003ab23dcc7da233658971831f",
+      "relationship": "copied",
+      "local_sha256": "9e3fe993b720047216de6b456f7e376acbe15d170f3883896b5f15db4846de19"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/softmax.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/softmax.py",
+      "upstream_git_blob": "4f052449a40bbc694b11ff99ee481f96b6561759",
+      "relationship": "derived-and-modified",
+      "local_sha256": "aacc0bf8a4cb2d3d461a89788db988aacef25cfb4b40981f9ecf8b448a0e4db0"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/tile_scheduler.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/tile_scheduler.py",
+      "upstream_git_blob": "f7aad9e212c87829bbe584e65f2419142ff0c3f8",
+      "relationship": "derived-and-modified",
+      "local_sha256": "80fd185ad714cab20ececff6408bb21e58db7121a29d581daf3ca2b8c910ec9f"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/tma_utils.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/tma_utils.py",
+      "upstream_git_blob": "35661d094c8dccfebf82e3700eb1918ed0082409",
+      "relationship": "derived-and-modified",
+      "local_sha256": "ab2ff25d8c0ddde59732e9876407879b2123fd91f11e71625419e3525dcf54f8"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/common/utils.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/utils.py",
+      "upstream_git_blob": "d57bb050921b764a832cff0c3474939647f88551",
+      "relationship": "derived-and-modified",
+      "local_sha256": "6331849970fee62df3bdc99c0f14cdeb42fd2150dd180cb9170b13f1fadb7ced"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/build_k2q_csr/__init__.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/build_k2q_csr/__init__.py",
+      "upstream_git_blob": "11b22013e96aa024089981a27fd4b3805aa7bb63",
+      "relationship": "derived-and-modified",
+      "local_sha256": "08396d77122364d130833c6a84acd23a00e47cf9866eb0cd7fa98ec1bb58dcd4"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/build_k2q_csr/build_k2q_csr.cu",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/build_k2q_csr/build_k2q_csr.cu",
+      "upstream_git_blob": "33ce23af1633a2fb561c55aada238863b4073729",
+      "relationship": "derived-and-modified",
+      "local_sha256": "06455aba2feadf0d47b63252e3a2c0fa5bb4cf86d30e0aeefba52771a592c62d"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/__init__.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/__init__.py",
+      "upstream_git_blob": "18b99aea3f8b4915c03fe8147127374d920970f3",
+      "relationship": "copied",
+      "local_sha256": "034baadade27e58df89848316fd373c64f6c2ac62bd85678b05f91a048a53a6a"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/atten_fwd.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/atten_fwd.py",
+      "upstream_git_blob": "4811d2aca7b2d897103a02e609d4196ebfbc783f",
+      "relationship": "derived-and-modified",
+      "local_sha256": "e9947686dbf12c010d9199bf7f58e41a12c6d1df63d8bf86e83a445447a80b3b"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/atten_fwd_nvfp4_kv.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/atten_fwd_nvfp4_kv.py",
+      "upstream_git_blob": "1e2bd4afd0a8a1827135ce2bd4bea1898ad8f97b",
+      "relationship": "derived-and-modified",
+      "local_sha256": "5f5d585edda26d26608954ebecd32a044d31a95dfed9fd0201c99ea29feb75a3"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/combine.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/combine.py",
+      "upstream_git_blob": "06254a2c080155de626c5bd88f6a67f80c2684a5",
+      "relationship": "derived-and-modified",
+      "local_sha256": "442c7cadf5c6613c6495fa16caada6adea4af222c39dfb11049f9a9f757e51e0"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/config.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/config.py",
+      "upstream_git_blob": "a538e2e3df201830efd0b7928f3b552c5dec8062",
+      "relationship": "derived-and-modified",
+      "local_sha256": "69bf79145943cb6b8eada05c7b8335b8e0377314c831a0ce1230940090a265a4"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/prepare_k2q_csr.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/prepare_k2q_csr.py",
+      "upstream_git_blob": "c1404ec894c32e6f31c8ee324ba97c02783b8a7c",
+      "relationship": "derived-and-modified",
+      "local_sha256": "1cdd28bd24f1584922b65bcd7e5d73ca8c2dff7415d3caf14789332fda93591c"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/prepare_scheduler.py",
+      "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/prepare_scheduler.py",
+      "upstream_git_blob": "c85cb3b7355eef1c33f70e840d279eeebb4d5dd3",
+      "relationship": "derived-and-modified",
+      "local_sha256": "086ea57c4ab3205c9a7336228ce099f799f8fd2270cf46072cfa4378b062941a"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/api_logging.py",
+      "upstream_path": "flashinfer/api_logging.py",
+      "upstream_git_blob": "510f3834a72ebd81984a33e987b440126311b61c",
+      "relationship": "derived-and-modified",
+      "local_sha256": "6967783115bd85d5b878be3ce7f118da54f104dfa5091914624e73b9fb81a491",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/bsa_attn_sm100_blk128.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/bsa_attn_sm100_blk128.py",
+      "upstream_git_blob": "8e7a96552687de2852e04b1b522da60a5e16e8db",
+      "relationship": "derived-and-modified",
+      "local_sha256": "219fd241ebbe0b12d2216e868d6b5e93ee09689e49f89bc52d85ad2984956a6d",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/bsa_utils/cache_utils.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/bsa_utils/cache_utils.py",
+      "upstream_git_blob": "a195069f075e8b082a7ba9a46da276d34d0174e4",
+      "relationship": "derived-and-modified",
+      "local_sha256": "9a183e4763d01fe23420407981b2574eba0d69dd871691fa8c97ac968cbff8e2",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/bsa_utils/cute_tensor_utils.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/bsa_utils/cute_tensor_utils.py",
+      "upstream_git_blob": "5992db6d96b4949e4ea0927f33169c6c7cb0a641",
+      "relationship": "copied",
+      "local_sha256": "625eaa546ee45ad064983880327c7cd530086529b1bc66e19cd6067f1b999c8f",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/bsa_utils/fa_logging.py",
+      "upstream_path": "flash_attn/cute/fa_logging.py",
+      "upstream_git_blob": "63189cd5d65adba3eb303d8db8757243ced1d0a3",
+      "relationship": "copied",
+      "local_sha256": "bc71edfa4b1cb7af64b78def09e790ff4c6fe64ab4fcf8e3d9699f44e8d3c0a0",
+      "repository": "https://github.com/Dao-AILab/flash-attention",
+      "commit": "6c4f74fb338e0c3cdb07ac6f5eab5f54fc367c15"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/bsa_utils/nvvm_compat.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/bsa_utils/nvvm_compat.py",
+      "upstream_git_blob": "1813a9a898ed6ce2e148528acf7e806ead4ddc25",
+      "relationship": "derived-and-modified",
+      "local_sha256": "e01a90dc60d776094f867e8d4aa3fafe9e9439744b6bb3916cacf1cb690c3be6",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/bsa_utils/testing.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/bsa_utils/testing.py",
+      "upstream_git_blob": "c77c7400863dd69c9b6de16166ebe8b957fc1406",
+      "relationship": "derived-and-modified",
+      "local_sha256": "06b2c11614586ef198a333fdd360bb25d7c98906b543935682ec0fb110d78480",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/__init__.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/__init__.py",
+      "upstream_git_blob": "ff2be05c8f5fb162d48b9d1c03ddd51d22bf07b0",
+      "relationship": "copied",
+      "local_sha256": "f70649e6351fc2a0854751e6965d9d9c4b99de8da8f78a58e85279913e8a71ad",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/blackwell_helpers.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/blackwell_helpers.py",
+      "upstream_git_blob": "ca39d41a1a4ea7d26f7c40fe08566101a6be3041",
+      "relationship": "copied",
+      "local_sha256": "6f4d64f0eb354b76f2ffc2f24594c057b0e979b03e91d2a8eedeaecbf22930d8",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/block_info.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/block_info.py",
+      "upstream_git_blob": "aefec298cfdd42900776393e05a049a03228ee98",
+      "relationship": "derived-and-modified",
+      "local_sha256": "d01ad33c33b9e16daa3a9d29e9fb8267bcdaae1e3fbb942eb9922413dafeec3c",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/cute_dsl_utils.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/cute_dsl_utils.py",
+      "upstream_git_blob": "414d7b9f08a839840ac67dfedea3ed973d8d2148",
+      "relationship": "copied",
+      "local_sha256": "13758994812a5d960bd8a61660524b354a1aafe4980ef4632c6a5b5b1c8f7d01",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/flash_fwd_sm100.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/flash_fwd_sm100.py",
+      "upstream_git_blob": "eea6bb0fd3a858e13a3c5d8ccd6d1e531e370928",
+      "relationship": "derived-and-modified",
+      "local_sha256": "d7a1a5f0be482875defb1e82a542dbae2ff275840c3a579528e2f6620baa8f17",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/mask.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/mask.py",
+      "upstream_git_blob": "0afb6eb35167c1fbe7daacf182f6122bb305cd8b",
+      "relationship": "derived-and-modified",
+      "local_sha256": "d9a3fdb3a9c46e2bb9fb8cd975ce2257adde7262f90a5cd0bbdcbfc6f6e78de0",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/mma_sm100_desc.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/mma_sm100_desc.py",
+      "upstream_git_blob": "7cef3c569f36997effa1eb69e2e3f31fafb0bd9b",
+      "relationship": "derived-and-modified",
+      "local_sha256": "2130b67b4c5b53b24db7fd0c4c3fccd1e477fe785e71b1efa35aa7e1809758bc",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/named_barrier.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/named_barrier.py",
+      "upstream_git_blob": "eb2631b1a0b1ff75dfcf3356311a9f18529d9fcb",
+      "relationship": "copied",
+      "local_sha256": "bd0718287d77613815908d58d4737d5070dc8ccc439743e669d2960aa3eeb192",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/pack_gqa.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/pack_gqa.py",
+      "upstream_git_blob": "5be5a8d1aaa43684d4901fceb96f19693f0020c9",
+      "relationship": "copied",
+      "local_sha256": "94a30115a64e455c8a55ea8e39b0f45706cf8b04bed5249f403a4aa6bbcf3e4b",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/pipeline.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/pipeline.py",
+      "upstream_git_blob": "5126dbe043e46d0b5b2b63cbbf1020d5ccafb2cb",
+      "relationship": "copied",
+      "local_sha256": "7838124b8846b6c280b85ffe66aadc4c44950930d2a323a1175604a8b56041a2",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/seqlen_info.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/seqlen_info.py",
+      "upstream_git_blob": "8ac9af7d679411b139de9af21428365daa5ff6db",
+      "relationship": "derived-and-modified",
+      "local_sha256": "4008824b382f2b169a291a493ad860d34f7853b9271f23b988aa0832de4b3179",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/softmax.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/softmax.py",
+      "upstream_git_blob": "8845a79fd4ffb1e919a6b360b215f8e9a8d56437",
+      "relationship": "derived-and-modified",
+      "local_sha256": "098d292111172f73c177806a800d38a650d44e54dfaaeb6599179e2a081543fb",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/tile_scheduler.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/tile_scheduler.py",
+      "upstream_git_blob": "b63dfd9581ee1dcb329fb324475ab5464943396c",
+      "relationship": "copied",
+      "local_sha256": "684c4de35366366253c92ddc7d01efd739e3bdecd7d2efa50837094b4a485f22",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/utils.py",
+      "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/utils.py",
+      "upstream_git_blob": "f3b39044b26fe43198dc665b2cf7ee25213fd194",
+      "relationship": "copied",
+      "local_sha256": "9d04d2daf0b6e8ae23310a02e655a6ff8fc248f5f78f0c0e91f3e9de8efc35fa",
+      "repository": "https://github.com/flashinfer-ai/flashinfer",
+      "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/msa/__init__.py",
+      "relationship": "locally-authored",
+      "license": "Apache-2.0",
+      "local_sha256": "9fe7fc7e65707c4b82255951c84a74763a32a3d873bd0a457b1761ff9c53c8fc"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/index.py",
+      "repository": "https://github.com/maxwell-model/MBSA",
+      "commit": "07ebee24d561190437bae8740fabeea0f506d0b7",
+      "upstream_path": "python/mbsa/cute/prefill.py",
+      "upstream_git_blob": "7320af642a9ff87da9c15e57fe6909640217807c",
+      "reference_role": "customer-base-preimage",
+      "intermediate_source": {
+        "repository": null,
+        "commit": "4f124c7ed60358b08e976133a2428f90a9aee0b4",
+        "upstream_path": "python/mbsa/backends/optimized/prefill.py",
+        "upstream_git_blob": "b7699541bc6cd42a03ea23cd7e5a5a1d2b27c909",
+        "status": "unverified-intermediate"
+      },
+      "relationship": "derived-and-refactored",
+      "license": "Apache-2.0",
+      "local_sha256": "b635123ff71fd31418698651d603ca3711dba105eebc16557b41a08fd62ff54b"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/runtime.py",
+      "relationship": "locally-authored",
+      "license": "Apache-2.0",
+      "local_sha256": "a108851b2fb56287fcbd83f8965132c9c4fed9b1f8f3d42d5fdc6bb2a13e3759"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/index_base.py",
+      "repository": "https://github.com/maxwell-model/MBSA",
+      "commit": "07ebee24d561190437bae8740fabeea0f506d0b7",
+      "upstream_path": "python/mbsa/cute/prefill.py",
+      "upstream_git_blob": "7320af642a9ff87da9c15e57fe6909640217807c",
+      "reference_role": "customer-base-preimage",
+      "intermediate_source": {
+        "repository": null,
+        "commit": "5e1be718e6b2c0dbb4315d3246157eff7d4303bb",
+        "upstream_path": "python/mbsa/backends/optimized/prefill.py",
+        "upstream_git_blob": "b7699541bc6cd42a03ea23cd7e5a5a1d2b27c909",
+        "status": "unverified-intermediate"
+      },
+      "relationship": "derived-and-refactored",
+      "license": "Apache-2.0",
+      "local_sha256": "c63c50c4ba984434a3523ef9e5a1f441e33fc6c277c7a29615e055e1d99db9a1"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/page_map.py",
+      "relationship": "locally-authored",
+      "license": "Apache-2.0",
+      "local_sha256": "6ffdddbe810c94291820c540a5cd87d8b873bd8160586097329c348f87875eb9"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/index_policy.py",
+      "relationship": "locally-authored",
+      "license": "Apache-2.0",
+      "local_sha256": "b0ab52557fdb9bac115fc5753c26ff6cbae3a9114b4ff2c532fce0389488b0e7"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/src/common/pipeline.py",
+      "repository": "https://github.com/maxwell-model/MBSA",
+      "commit": "07ebee24d561190437bae8740fabeea0f506d0b7",
+      "reference_role": "customer-base-preimage",
+      "intermediate_source": {
+        "repository": null,
+        "commit": "7e8a174a55a8ddbb4aef04bfc1e3ffcad9046137",
+        "upstream_path": "python/mbsa/cute/src/common/pipeline.py",
+        "upstream_git_blob": "1ffa9ae64c03ba11849f0f13be992ad3cb0922e0",
+        "status": "unverified-intermediate"
+      },
+      "upstream_path": "python/mbsa/cute/src/common/pipeline.py",
+      "upstream_git_blob": "1ffa9ae64c03ba11849f0f13be992ad3cb0922e0",
+      "relationship": "copied",
+      "local_sha256": "f5d70b47ee923b5ee99d689862fffe137c55a438415e4e545897ca29f3029297"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/src/sm100/mx_router.py",
+      "repository": "https://github.com/maxwell-model/MBSA",
+      "commit": "07ebee24d561190437bae8740fabeea0f506d0b7",
+      "reference_role": "customer-base-preimage",
+      "intermediate_source": {
+        "repository": null,
+        "commit": "7e8a174a55a8ddbb4aef04bfc1e3ffcad9046137",
+        "upstream_path": "python/mbsa/cute/src/sm100/mx_router.py",
+        "upstream_git_blob": "cba88476a2a7c38fbd6da30f1aab6117e223e1db",
+        "status": "unverified-intermediate"
+      },
+      "upstream_path": "python/mbsa/cute/src/sm100/mx_router.py",
+      "upstream_git_blob": "cba88476a2a7c38fbd6da30f1aab6117e223e1db",
+      "relationship": "derived-and-modified",
+      "local_sha256": "bde82523f6f5017d2598af627d5ebf74374da268c6547e1c658c845330f650bd"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/src/sm100/router.py",
+      "repository": "https://github.com/maxwell-model/MBSA",
+      "commit": "07ebee24d561190437bae8740fabeea0f506d0b7",
+      "reference_role": "customer-base-preimage",
+      "intermediate_source": {
+        "repository": null,
+        "commit": "7e8a174a55a8ddbb4aef04bfc1e3ffcad9046137",
+        "upstream_path": "python/mbsa/cute/src/sm100/router.py",
+        "upstream_git_blob": "71f811d3993c62391ab9c3fc880e314d47c2cae4",
+        "status": "unverified-intermediate"
+      },
+      "upstream_path": "python/mbsa/cute/src/sm100/router.py",
+      "upstream_git_blob": "1377b0912d72706313afb47f4db88ae49ca6dbb5",
+      "relationship": "derived-and-modified",
+      "local_sha256": "32f9f5cd237649711bb8fb1f854bedde45bf696a26544430456306cff6e338b5"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/Block-Sparse-Attention-BSD-3-Clause.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "6782e62ef44a6ec45fc598df9228038f2955a643e4cbbf2f9744672c2ec9317a"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/Apache-2.0.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/BSA-NOTICE.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "90bb9e1dec06f26a34f8f8ce98c53ded10b4fd8e1a9e91e2360e6be354e81db3"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/CUTLASS-BSD-3-Clause.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "6fc6ad419e4d26571a14c7c4d26b65345865c20dd8686ddcf5e8673f54d3d233"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/FlashAttention-BSD-3-Clause.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/FlashInfer-Apache-2.0.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "cb67c224f503e0a063908950b12f89a7280c6e527dcffac972aa114e4bf3c5de"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/FlashInfer-NOTICE.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "90bb9e1dec06f26a34f8f8ce98c53ded10b4fd8e1a9e91e2360e6be354e81db3"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/MSA-MIT.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "eed4ccce37c2d24822da3bd9d5bee7bc12d494741de56ada513d0b97f537fcd0"
+    },
+    {
+      "path": "python/mbsa/backends/optimized/licenses/MSA-NOTICE.txt",
+      "relationship": "license-or-notice",
+      "local_sha256": "70de99d8ab6aae192cb721d053e7d9edc2efc2eacd736a2e9b7bc6d70aa12fe4"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 """Fixed FA4 dispatch, complete-output oracle, bind-layer and graph contracts."""
 import importlib.util
 from pathlib import Path
@@ -77,6 +78,77 @@ class FixedFA4Regression(unittest.TestCase):
         self.assertEqual(getattr(a.fixed_attention._mask_mod, '__vec_size__', 1), 1)
         pipeline.run()
         self._check(pipeline, data)
+
+    def test_packed_paged_partial_kv_boundaries_and_live_graph(self):
+        """Unaligned mixed requests exclude physical page padding independently."""
+        from mbsa.cute.fixed_attention import PreparedFixedAttention
+
+        lengths = ((1025, 2187), (13, 769))
+        gen = torch.Generator(device='cuda').manual_seed(109)
+        def rand(shape):
+            return (torch.randn(shape, device='cuda', generator=gen) * .2).bfloat16()
+        q = rand((1038, 32, 128))
+        # Permuted physical pages and unequal request tails exercise logical
+        # masking independently of physical traversal and the pool's length.
+        k, v = rand((32, 4, 128, 128)), rand((32, 4, 128, 128))
+        table = torch.full((2, 18), -1, dtype=torch.int32, device='cuda')
+        table[0] = torch.arange(18, device='cuda', dtype=torch.int32).roll(5)
+        table[1, :7] = torch.arange(20, 27, device='cuda', dtype=torch.int32).flip(0)
+        used = torch.tensor([nk for _, nk in lengths], dtype=torch.int32, device='cuda')
+        guarded = torch.full((q.shape[0] + 2, 32, 128), 7, dtype=q.dtype, device='cuda')
+        fixed = PreparedFixedAttention(q, k, v, table, used, lengths,
+                                       out=guarded[1:-1], pack_gqa=True)
+
+        def check(observed_out=None, observed_lse=None):
+            observed_out = fixed.out if observed_out is None else observed_out
+            observed_lse = fixed.lse if observed_lse is None else observed_lse
+            begin = 0
+            for row, (nq, nk) in enumerate(lengths):
+                pages = table[row, :(nk + 127) // 128].long()
+                logical_k = k[pages].permute(0, 2, 1, 3).reshape(-1, 4, 128)[:nk]
+                logical_v = v[pages].permute(0, 2, 1, 3).reshape(-1, 4, 128)[:nk]
+                expected, expected_lse = fixed_oracle(q[begin:begin+nq], logical_k, logical_v)
+                torch.testing.assert_close(observed_out[begin:begin+nq].float(), expected,
+                                           atol=.025, rtol=.025)
+                torch.testing.assert_close(observed_lse[:, begin:begin+nq], expected_lse,
+                                           atol=.002, rtol=.002)
+                begin += nq
+            self.assertTrue(torch.all(guarded[0] == 7).item())
+            self.assertTrue(torch.all(guarded[-1] == 7).item())
+
+        fixed.run()
+        check()
+        expected_out, expected_lse = fixed.out.clone(), fixed.lse.clone()
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            fixed.run()
+        torch.cuda.current_stream().wait_stream(stream)
+        def replay_exact(replay):
+            fixed.out.fill_(torch.nan)
+            fixed.lse.fill_(torch.nan)
+            replay()
+            # Inspect the live graph outputs before any eager overwrite.
+            torch.testing.assert_close(fixed.out, expected_out, atol=0, rtol=0)
+            torch.testing.assert_close(fixed.lse, expected_lse, atol=0, rtol=0)
+        # The exact replay check must reject a no-op writer.
+        with self.assertRaises(AssertionError):
+            replay_exact(lambda: None)
+        for _ in range(3):
+            replay_exact(graph.replay)
+        q.mul_(.5)
+        v.add_(3)
+        graph.replay()
+        check()
+        changed_out, changed_lse = fixed.out.clone(), fixed.lse.clone()
+        # Distinctive new V values make a stale-input replay fail the same
+        # independent oracle gate, rather than relying on small perturbations.
+        with self.assertRaises(AssertionError):
+            check(expected_out, expected_lse)
+        fixed.run()
+        torch.testing.assert_close(fixed.out, changed_out, atol=0, rtol=0)
+        torch.testing.assert_close(fixed.lse, changed_lse, atol=0, rtol=0)
 
     def test_private_compilation_reuse_keeps_geometry_and_operands_independent(self):
         """New plans reuse compatible kernels without stale operands or public cache edits."""

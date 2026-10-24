@@ -8,7 +8,7 @@
 """Public FA4 kernel override with converged TMEM lifecycle.
 
 Only the installed public SM100 kernel method is derived here. The installed
-base owns every other method. No V2/V3 source is used. The preparation-only
+base owns every other method. The preparation-only
 source guard rejects another package version or a modified installed base.
 """
 from functools import lru_cache, partial

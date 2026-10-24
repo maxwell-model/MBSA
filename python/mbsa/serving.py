@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 """Paged prefill: Top-16 routing, fixed attention and dynamic attention.
 Stage host lengths once per step; rebind operands for each layer.
 Requests are split into chunks of at most 8192 queries."""
@@ -190,12 +191,34 @@ class PrefillStep:
         page_table: torch.Tensor,
         index_page_table: torch.Tensor,
     ) -> None:
+        """Retain a serving step's lengths and page maps; preparation is lazy.
+
+        Args:
+            owner: Prefill runner providing device, partial dtype and backend.
+            request_lens: Tuple of (Q,KV) token counts in packed query order; KV includes cached
+                context.
+            page_table: CUDA int32 attention page table [>=B,>=ceil(max_KV/128)], mapping logical
+                pages to physical K/V cache pages. Storage is retained; order mutations before
+                queued use.
+            index_page_table: CUDA int32 Index page table with one row per request, or compact 1-D
+                active IDs for optimized. Optimized requires adjacent contiguous active rows
+                (16-byte row alignment for unpacked/MX, 4-byte for packed floating Index), and
+                rejects automatic splitting of Q>8192.
+
+        Returns:
+            None. Page-table views share caller storage; layer operands are bound on run().
+        """
         self._owner = owner
         self.request_lens = request_lens
         self.total_q = sum(q_len for q_len, _ in request_lens)
         self.pieces, self._rows = split_requests(request_lens)
         self._page_table = page_table[: len(request_lens)]
-        self._index_page_table = index_page_table[: len(request_lens)]
+        if owner.backend == "optimized" and len(self.pieces) != len(request_lens):
+            raise ValueError("direct Index maps require requests with Q <= 8192; split requests and maps before staging")
+        if owner.backend == "optimized" and index_page_table.ndim == 1:
+            self._index_page_table = index_page_table
+        else:
+            self._index_page_table = index_page_table[: len(request_lens)]
         self.plan = None
 
     def run(
@@ -240,7 +263,13 @@ class PrefillStep:
 
     def _prepare(self, index_q, index_k, q, k, v, out, index_q_scales):
         from .api import prepare_sm100, prepare_cutedsl_pipeline
-        from .cute.prefill import stage_int32
+        capability = torch.cuda.get_device_capability(q.device)
+        if self._owner.backend == "optimized" and capability not in ((10, 0), (10, 3)):
+            raise ValueError(self._owner.backend + " backend requires SM100 or SM103")
+        if self._owner.backend == "optimized":
+            from .backends.optimized.runtime import stage_int32
+        else:
+            from .cute.prefill import stage_int32
 
         lens = self.pieces
         batch = len(lens)
@@ -260,7 +289,7 @@ class PrefillStep:
                 q.device, (q_prefix, (batch + 1,)), (k_prefix, (batch + 1,))
             )
             packed["request_lens"] = lens
-        if torch.cuda.get_device_capability(q.device) == (9, 0):
+        if capability == (9, 0):
             return prepare_cutedsl_pipeline(
                 index_q,
                 index_k,
@@ -271,8 +300,9 @@ class PrefillStep:
                 page_table=page_table,
                 partial_dtype=self._owner.partial_dtype,
                 out=out,
+                backend=self._owner.backend,
                 **packed,
-            ).plan
+            )._owner
         return prepare_sm100(
             index_q,
             index_k,
@@ -285,22 +315,38 @@ class PrefillStep:
             partial_dtype=self._owner.partial_dtype,
             out=out,
             check_device_inputs=False,
-            fixed_stream=self._owner.fixed_stream(),
+            fixed_stream=None,
+            backend=self._owner.backend,
             **packed,
-        ).plan
+        )._owner
 
 
 class Prefill:
     """Run prefill layers serially on one device, with fixed attention on a side stream."""
 
     def __init__(
-        self, device: torch.device, *, partial_dtype: torch.dtype | None = None
+        self, device: torch.device, *, partial_dtype: torch.dtype | None = None,
+        backend: str = "default",
     ) -> None:
-        from .api import _resolve_partial_dtype
+        """Create a serial serving runner for one device and backend.
 
+        Args:
+            device: CUDA device accepted by torch.device; used for stage allocations and streams.
+            partial_dtype: BF16 or torch.float8_e4m3fn partial-output storage. None reads
+                MBSA_FP8_PARTIAL_OUT (0=BF16, the default; 1=E4M3FN). Final output remains BF16.
+            backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
+                (SM100/SM103). Selection is fixed for the plan lifetime.
+
+        Returns:
+            None. Device buffers and compilation are deferred until a step first runs.
+        """
+        from .api import _resolve_partial_dtype, _validate_backend
+
+        _validate_backend(backend)
         partial_dtype = _resolve_partial_dtype(partial_dtype)
         self.device = torch.device(device)
         self.partial_dtype = partial_dtype
+        self.backend = backend
         self._fixed_stream: torch.cuda.Stream | None = None
 
     def fixed_stream(self) -> torch.cuda.Stream:
@@ -315,22 +361,37 @@ class Prefill:
         index_page_table: torch.Tensor,
     ) -> PrefillStep:
         """Stage host (q_len,kv_len) pairs in packed query order.
-        Page tables are int32 [>=B,>=pages] logical-to-physical mappings."""
+        Page tables are int32 [>=B,>=pages] logical-to-physical mappings.
+        Optimized also accepts compact 1-D active Index page IDs for unsplit requests."""
         lens = tuple((int(q_len), int(kv_len)) for q_len, kv_len in request_lens)
         return PrefillStep(self, lens, page_table, index_page_table)
 
 
-_RUNNERS: dict[tuple[torch.device, torch.dtype], Prefill] = {}
+_RUNNERS: dict[tuple[torch.device, torch.dtype, str], Prefill] = {}
 
 
-def runner(device: torch.device, partial_dtype: torch.dtype | None = None) -> Prefill:
-    """The shared runner for a device and partial dtype."""
-    from .api import _resolve_partial_dtype
+def runner(device: torch.device, partial_dtype: torch.dtype | None = None, *,
+           backend: str = "default") -> Prefill:
+    """Get the process-cached serial runner for a device, dtype and backend.
 
+    Args:
+        device: CUDA device accepted by torch.device; part of the cache key.
+        partial_dtype: BF16 or torch.float8_e4m3fn partial-output storage. None reads
+            MBSA_FP8_PARTIAL_OUT (0=BF16, the default; 1=E4M3FN). Final output remains BF16.
+        backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
+            (SM100/SM103). Selection is fixed for the plan lifetime.
+
+    Returns:
+        Shared Prefill instance for the resolved key. Use a separately constructed Prefill when
+        independent runner state is needed.
+    """
+    from .api import _resolve_partial_dtype, _validate_backend
+
+    _validate_backend(backend)
     partial_dtype = _resolve_partial_dtype(partial_dtype)
-    key = (torch.device(device), partial_dtype)
+    key = (torch.device(device), partial_dtype, backend)
     if key not in _RUNNERS:
-        _RUNNERS[key] = Prefill(key[0], partial_dtype=partial_dtype)
+        _RUNNERS[key] = Prefill(key[0], partial_dtype=partial_dtype, backend=backend)
     return _RUNNERS[key]
 
 
@@ -375,7 +436,22 @@ def warmup(
     kv_dtype: torch.dtype = torch.bfloat16,
     q_dtype: torch.dtype = torch.bfloat16,
 ) -> None:
-    """Compile one geometry and attention precision on initialized dummy caches."""
+    """Compile and execute a serving geometry using initialized dummy caches.
+
+    Allocates temporary storage on prefill.device and submits CUDA work; use outside graph capture.
+    It does not bind caller model tensors.
+
+    Args:
+        prefill: Prefill runner whose backend, device and partial dtype select the programs.
+        request_lens: Host sequence of (Q,KV) token lengths to prepare and execute.
+        index_format: Index cache format: bf16, fp16, fp8 or mxfp6.
+        kv_dtype: Attention K/V dtype, BF16 by default or E4M3FN on Blackwell.
+        q_dtype: Attention Q dtype, BF16 by default; E4M3FN is allowed only with E4M3FN K/V.
+
+    Returns:
+        None. Compiled entries remain in the process caches; queued dummy execution is ordered on
+        the current stream.
+    """
     if kv_dtype not in (torch.bfloat16, torch.float8_e4m3fn):
         raise ValueError("warmup KV dtype must be BF16 or FP8 E4M3FN")
     if q_dtype not in ((torch.bfloat16, torch.float8_e4m3fn)
@@ -428,7 +504,7 @@ def warmup(
         out=torch.empty_like(q, dtype=torch.bfloat16),
         index_q_scales=scales,
     )
-    if blackwell:
+    if blackwell and prefill.backend != "optimized":
         from .cute.paged_fixed_maps import refresh_maps
 
         indices = logical.long()
@@ -439,7 +515,12 @@ def warmup(
 
 
 def compiled_kernel_count() -> int:
-    """Kernels compiled so far by the prefill's CuTe DSL launchers."""
+    """Count entries currently held by the loaded CuTe launcher caches.
+
+    Returns:
+        Integer cache-entry count across supported loaded modules. This excludes Triton/native
+        extension compilation and is not a count of GPU launches.
+    """
     import sys
 
     modules = (
@@ -451,6 +532,14 @@ def compiled_kernel_count() -> int:
         "cute.kvouter.sparse_fwd_kvouter",
         "cute.kvouter.sparse_fwd_kvouter_combine",
         "cute.kvouter.sparse_fwd_kvouter_load_balance_schedule",
+    )
+    modules += (
+        "backends.optimized.src.sm100.router",
+        "backends.optimized.src.sm100.mx_router",
+        "backends.optimized.bsa.cute_dsl.sparse.bsa_attn_sm100_blk128",
+        "backends.optimized.msa.cute.interface",
+        "backends.optimized.msa.cute.src.sm100.fwd.combine",
+        "backends.optimized.kernels.merge",
     )
     return sum(
         len(value)

@@ -1,6 +1,13 @@
 Maxwell Block Sparse Attention (MBSA)
 Source attribution and integration notice
 
+Backend scope
+  The MiniMax helpers, Fireworks, FA4 and Maxwell orchestration sections below
+  describe the original default backend unless otherwise stated. Statements
+  about their public sources or independent implementations do not describe
+  the separately imported optimized backend. Its sources and adaptations are
+  recorded in the NVIDIA contribution section and optimized/PROVENANCE.md.
+
 Project licensing
   Original MBSA code and MBSA-owned modifications are licensed under
   Apache License 2.0; see LICENSE. Third-party source retains its original
@@ -87,18 +94,33 @@ Maxwell Team host attention orchestration
   Apache-2.0 host code. plan.py defines the public planning, tensor metadata,
   validation and workspace contracts; prefill.py prepares and dispatches
   Fixed, Dynamic and Index work. Neither file contains a GPU kernel
-  implementation. The current Blackwell path uses the separately attributed
+  implementation. The default Blackwell path uses the separately attributed
   public FA4 Fixed backend, Fireworks Dynamic backend, MBSA Index router and
   the original merge_vectorized.py implementation.
 
 MBSA integration
-  Hopper uses its architecture-specific Fixed/Dynamic pipeline. Blackwell
-  uses FA4 Fixed and Fireworks Dynamic, with independent output and LSE states.
+  Hopper uses its architecture-specific Fixed/Dynamic pipeline. The Blackwell
+  default uses FA4 Fixed and Fireworks Dynamic, with independent output and
+  LSE states.
   Native Index routing supports BF16, FP16 and FP8; native MXFP6 requires
   Blackwell. Optional FP8 partials use the scaled storage and combination
   adaptation described above.
   Installed runtime dependencies retain their own licenses. The independent
   FP32 correctness oracle is test support and is not shipped in the runtime.
+
+NVIDIA optimized backend contribution
+  Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+  python/mbsa/backends/optimized/ includes NVIDIA integration code and
+  adapted MiniMax MSA (MIT), FlashInfer (Apache-2.0), and applicable
+  FlashAttention, Block-Sparse-Attention and CUTLASS (BSD-3-Clause) portions.
+  Existing third-party copyright and license terms are retained. See its
+  UPSTREAM.json for source/modification records and licenses/ for the
+  distributed third-party license texts and notices.
+  index.py and index_base.py refactor Maxwell Team host orchestration from
+  python/mbsa/cute/prefill.py; they retain that source's Maxwell attribution
+  alongside NVIDIA's adaptations. The optimized source record distinguishes
+  historical delivery snapshots from customer-base preimages and does not
+  claim a repository-wide license grant for a historical source snapshot.
 
 Component license and copyright texts remain authoritative for their sources.
 This notice records attribution; it does not assign a new license to upstream
