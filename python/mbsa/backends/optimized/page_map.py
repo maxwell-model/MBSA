@@ -9,24 +9,26 @@ def page_operand_view(rows, alignment):
     Args:
         rows: Nonempty sequence of contiguous active tensor rows in request order. Every row must
             share one backing storage and immediately follow its predecessor without gaps.
-        alignment: Required byte alignment of every row address, normally 16 for unpacked/MX or 4 for
-            packed floating Index.
+        alignment: Required byte alignment of the flattened operand's base, normally 16 for
+            unpacked/MX or 4 for packed floating Index. Internal row offsets are scalar indices.
 
     Returns:
         1-D contiguous view spanning all active row elements, aliasing caller storage. Raises
-        ValueError before publication for gaps, strides, distinct allocations or unaligned rows.
+        ValueError before publication for gaps, strides, distinct allocations or unaligned base.
     """
     if not rows:
         raise ValueError("direct Index page map requires at least one active row")
     first = rows[0]
+    if first.data_ptr() % alignment:
+        raise ValueError(f"direct Index page map requires a {alignment}-byte aligned base")
     offset = 0
     for row in rows:
-        if (not row.is_contiguous() or row.data_ptr() % alignment
+        if (not row.is_contiguous()
                 or row.untyped_storage().data_ptr() != first.untyped_storage().data_ptr()
                 or row.data_ptr() != first.data_ptr() + offset * first.element_size()):
             raise ValueError(
                 f"direct Index page map requires adjacent contiguous active rows "
-                f"in one storage with {alignment}-byte aligned row addresses; "
+                f"in one storage with a {alignment}-byte aligned base; "
                 "pass compact active page IDs without gaps or strides"
             )
         offset += row.numel()

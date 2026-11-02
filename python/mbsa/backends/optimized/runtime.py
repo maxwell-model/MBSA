@@ -10,6 +10,7 @@ import torch
 
 from .._binding import validate_output_aliases
 from .._lifecycle import PreparedOwnerBase
+from .._index_options import validate_lean192
 
 
 def stage_int32(device, *arrays):
@@ -369,10 +370,11 @@ class PreparedOwner(PreparedOwnerBase):
                 the queued invocation completes.
             index_page_indices: Replacement CUDA int32 logical-to-physical Index page IDs, compact
                 1-D active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows
-                directly: one adjacent contiguous storage span, each row aligned to 16 bytes for
-                unpacked/MX or 4 bytes for packed floating Index. Gaps/strides are rejected;
-                compact maps avoid row padding. Supply an explicit replacement map matching the
-                prepared metadata; None does not regenerate a map during rebind.
+                directly: one adjacent contiguous span with a 16-byte base alignment for
+                unpacked/MX or 4-byte base alignment for packed floating Index. Individual
+                compact request rows need not be 16-byte aligned. Gaps/strides are rejected.
+                Supply an explicit replacement map matching the prepared metadata; None does
+                not regenerate a map during rebind.
             page_table: Replacement paged-attention map with the prepared shape/stride/dtype/device
                 and valid physical page IDs.
             out: Replacement writable BF16 output with prepared shape/stride/device and disjoint
@@ -391,6 +393,11 @@ class PreparedOwner(PreparedOwnerBase):
                        page_table, out, index_q_scales, check_pages):
         self._check_mutable()
         old = self.plan._state
+        if check_pages and old.index.lean192_mode == "on":
+            raise ValueError(
+                'lean192="on" cannot rebind a mutable Index page map; '
+                'prepare a new dense plan or use lean192="auto"/"off"'
+            )
         if old.bindings['index_q_scales'] is not None and index_q_scales is None:
             raise ValueError("MX Index requires index_q_scales")
         replacements = dict(index_q=index_q, index_k=index_k, q=q, k=k, v=v,
@@ -500,7 +507,12 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
                    cu_seqlens_q=None, cu_seqlens_k=None, request_lens=None,
                    index_page_indices=None, page_table=None, logical_k_tokens=None,
                    overlap_fixed_score=None, partial_dtype=None, out=None,
-                   check_device_inputs=True, fixed_stream=None):
+                   check_device_inputs=True, fixed_stream=None, lean192="auto"):
+    validate_lean192(lean192)
+    if lean192 == "on":
+        from .index import lean192_compiler_supported
+        if not lean192_compiler_supported():
+            raise ValueError('lean192="on" requires an SM103 compiler target')
     from ...api import _resolve_partial_dtype
     from .kernels.attention import prepare_unified_aligned_prefill
     from .kernels.plan import FwdTilePlan, PrefillPolicy
@@ -587,7 +599,7 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         prefix_lens=offsets, attention=attention, q_lens=q_lens, kv_lens=kv_lens,
         index_pages_identity=not pages_supplied and len(lens)==1,
         check_device_inputs=check_device_inputs, original_q=q, original_k=k,
-        original_v=v, contiguous_unpacked=unpacked and k.ndim==3)
+        original_v=v, contiguous_unpacked=unpacked and k.ndim==3, lean192=lean192)
     if not overlap_fixed_score or attention.fixed_only:
         fixed_stream = None
     elif fixed_stream is None:
@@ -598,7 +610,8 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
                    cu_seqlens_k=None if unpacked else cu_seqlens_k,
                    request_lens=None if unpacked else lens, logical_k_tokens=logical_k_tokens,
                    overlap_fixed_score=overlap_fixed_score, partial_dtype=partial_dtype,
-                   check_device_inputs=check_device_inputs, fixed_stream=fixed_stream)
+                   check_device_inputs=check_device_inputs, fixed_stream=fixed_stream,
+                   lean192=lean192)
     state = _State(attention, index, bindings, lens, rows, tuple(conversions), options,
                     fixed_stream, torch.cuda.Event() if fixed_stream else None,
                     torch.cuda.Event() if fixed_stream else None)

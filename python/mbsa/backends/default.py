@@ -173,9 +173,10 @@ def prepare_sm100(
             synchronize. Optimized requires 0<Q<=8192 and Q<=KV<=1048576 per request.
         index_page_indices: Optional CUDA int32 logical-to-physical Index page IDs, compact 1-D
             active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows directly:
-            one adjacent contiguous storage span, each row aligned to 16 bytes for unpacked/MX or 4
-            bytes for packed floating Index. Gaps/strides are rejected; compact maps avoid row
-            padding. None creates the backend default mapping.
+            one adjacent contiguous storage span with a 16-byte base alignment for unpacked/MX
+            or 4-byte base alignment for packed floating Index. Individual compact request rows
+            need not be 16-byte aligned. Gaps/strides are rejected. None creates the backend
+            default mapping.
         page_table: Optional contiguous CUDA int32 [B,>=ceil(KV/128)] attention logical-to-physical
             page table, required for paged K/V. Each active ID addresses a physical K/V page.
         logical_k_tokens: Optional logical KV token count for one unpacked request, excluding
@@ -325,9 +326,10 @@ def prepare_sm90(
             requests. Lengths include cached context; supply with cu_seqlens_q.
         index_page_indices: Optional CUDA int32 logical-to-physical Index page IDs, compact 1-D
             active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows directly:
-            one adjacent contiguous storage span, each row aligned to 16 bytes for unpacked/MX or 4
-            bytes for packed floating Index. Gaps/strides are rejected; compact maps avoid row
-            padding. None creates the backend default mapping.
+            one adjacent contiguous storage span with a 16-byte base alignment for unpacked/MX
+            or 4-byte base alignment for packed floating Index. Individual compact request rows
+            need not be 16-byte aligned. Gaps/strides are rejected. None creates the backend
+            default mapping.
         page_table: Optional contiguous CUDA int32 [B,>=ceil(KV/128)] attention logical-to-physical
             page table, required for paged K/V. Each active ID addresses a physical K/V page.
         logical_k_tokens: Optional logical KV token count for one unpacked request, excluding

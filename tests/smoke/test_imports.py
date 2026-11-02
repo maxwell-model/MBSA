@@ -19,6 +19,35 @@ CUTEDSL_ARCHS = ((9, 0), (10, 0), (10, 3))
 
 class ImportBoundaryTest(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec('cutlass'), 'CUTLASS DSL is required')
+    def test_optimized_import_under_vllm_vendored_namespace(self):
+        """Optimized imports must not require an unrelated top-level mbsa alias."""
+        script = r'''
+import importlib, importlib.util, sys, types
+from pathlib import Path
+root = Path(sys.argv[1])
+for name in ('vllm', 'vllm.third_party'):
+    module = types.ModuleType(name)
+    module.__path__ = []
+    sys.modules[name] = module
+name = 'vllm.third_party.mbsa'
+spec = importlib.util.spec_from_file_location(name, root / '__init__.py',
+    submodule_search_locations=[str(root)])
+module = importlib.util.module_from_spec(spec)
+sys.modules[name] = module
+spec.loader.exec_module(module)
+for suffix in ('.backends.optimized.runtime', '.backends.optimized.kernels.attention',
+               '.backends.optimized.msa.cute.interface'):
+    imported = importlib.import_module(name + suffix)
+    assert imported.__name__.startswith(name + '.')
+assert 'mbsa' not in sys.modules
+'''
+        result = subprocess.run(
+            [sys.executable, '-I', '-c', script, str(ROOT / 'python/mbsa')],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(importlib.util.find_spec('cutlass'), 'CUTLASS DSL is required')
     def test_runtime_import_under_vllm_vendored_namespace(self):
         """The CUDA runtime must load without a standalone mbsa package alias."""
         script = r'''

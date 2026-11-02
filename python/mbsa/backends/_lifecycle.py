@@ -3,9 +3,30 @@
 """Ordered lifecycle policy for backend-owned prepared plans."""
 
 import copy
-from types import MethodType
+from functools import cache
 import torch
 from ._binding import stage_plan, publish_plan, validate_output_aliases
+
+
+@cache
+def _tracked_run_type(base):
+    """Track capture on the class, without an instance-owned bound-method cycle."""
+    if getattr(base, "_mbsa_tracks_external_capture", False):
+        return base
+    original_run = base.run
+
+    class TrackedPlan(base):
+        __slots__ = ()
+        _mbsa_tracks_external_capture = True
+
+        def run(self):
+            capturing = torch.cuda.is_current_stream_capturing()
+            result = original_run(self)
+            if capturing:
+                self._binding_external_capture = True
+            return result
+
+    return TrackedPlan
 
 
 class PreparedOwnerBase:
@@ -29,16 +50,7 @@ class PreparedOwnerBase:
         # Preserve the compatibility plan.run entry point while observing
         # external capture on that entry point as well as on the public API.
         plan._binding_external_capture = False
-        original_run = type(plan).run
-
-        def tracked_run(bound_plan):
-            capturing = torch.cuda.is_current_stream_capturing()
-            result = original_run(bound_plan)
-            if capturing:
-                bound_plan._binding_external_capture = True
-            return result
-
-        plan.run = MethodType(tracked_run, plan)
+        plan.__class__ = _tracked_run_type(type(plan))
         self._retired_bindings = []
 
     def __getattr__(self, name):
@@ -124,8 +136,8 @@ class PreparedOwnerBase:
                 the queued invocation completes.
             index_page_indices: Replacement CUDA int32 logical-to-physical Index page IDs, compact
                 1-D active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows
-                directly: one adjacent contiguous storage span, each row aligned to 16 bytes for
-                unpacked/MX or 4 bytes for packed floating Index. Gaps/strides are rejected;
+                directly: one adjacent contiguous storage span, with its base aligned to 16 bytes
+                for unpacked/MX or 4 bytes for packed floating Index. Gaps/strides are rejected;
                 compact maps avoid row padding. Supply an explicit replacement map matching the
                 prepared metadata; None does not regenerate a map during rebind.
             page_table: Replacement paged-attention map with the prepared shape/stride/dtype/device

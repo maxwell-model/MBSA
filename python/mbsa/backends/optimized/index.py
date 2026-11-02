@@ -6,11 +6,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import torch
 import cuda.bindings.driver as cuda
+from cutlass.base_dsl import BaseDSL
+from cutlass.base_dsl.arch import Arch
 from .index_base import IndexPipelineState, stage_int32
 from .src.sm100.router import indexer_local_top16, _local_top16_arguments
 from .kernels.plan import SPEC, PrefillPolicy
 from .page_map import page_operand_view
 from .index_policy import select_partition_blocks, lean192_index_eligible
+from .._index_options import resolve_lean192, validate_lean192
 
 
 @dataclass
@@ -20,6 +23,8 @@ class OptimizedIndexPlan(IndexPipelineState):
     _local_top16_args: tuple | None = None
     _local_top16_compiled: object | None = None
     _local_top16_key: tuple | None = None
+    lean192_mode: str = "auto"
+    lean192_bound: bool = False
 
     def run_score(self):
         """Launch the bound local selection ABI on the current CUDA stream.
@@ -36,6 +41,11 @@ class OptimizedIndexPlan(IndexPipelineState):
         self._local_top16_compiled(*self._local_top16_args, stream)
 
 
+def lean192_compiler_supported():
+    """Match the Indexer's actual compiler-target check during preparation."""
+    return BaseDSL._get_dsl().get_arch_enum().is_family_of(Arch.sm_103f)
+
+
 def bind_score_operands(plan):
     """Bind immutable launch metadata and select the single-partition direct-ID epilogue.
 
@@ -50,6 +60,7 @@ def bind_score_operands(plan):
     plan._local_top16_args = None
     plan._local_top16_compiled = None
     plan._local_top16_key = None
+    plan.lean192_bound = False
     if (plan.attention.fixed_only or plan.mxfp6_router is not None
             or plan.cutedsl_packed_tile_metadata is not None):
         return
@@ -79,11 +90,12 @@ def bind_score_operands(plan):
         _prepare_only=True,
         _fuse_single_partition_compact=partitions == 1,
     )
+    plan.lean192_bound = bool(plan._lean192_early_router and lean192_compiler_supported())
 
 def prepare_index(index_q, index_k, *, index_q_scales, index_page_indices,
                   candidate_storage, prefix_lens, attention, q_lens, kv_lens,
                   index_pages_identity, check_device_inputs, original_q,
-                  original_k, original_v, contiguous_unpacked):
+                  original_k, original_v, contiguous_unpacked, lean192="auto"):
     """Allocate selection workspaces and bind the Index stage for a prepared attention plan.
 
     Args:
@@ -96,9 +108,10 @@ def prepare_index(index_q, index_k, *, index_q_scales, index_page_indices,
             bytes per head. Required for MXFP6 Index K; otherwise None.
         index_page_indices: Optional CUDA int32 logical-to-physical Index page IDs, compact 1-D
             active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows directly:
-            one adjacent contiguous storage span, each row aligned to 16 bytes for unpacked/MX or 4
-            bytes for packed floating Index. Gaps/strides are rejected; compact maps avoid row
-            padding. None creates the backend default mapping.
+            one adjacent contiguous storage span with a 16-byte base alignment for unpacked/MX
+            or 4-byte base alignment for packed floating Index. Individual compact request rows
+            need not be 16-byte aligned. Gaps/strides are rejected. None creates the backend
+            default mapping.
         candidate_storage: Writable contiguous FP32 candidate backing [4,32,T], with packed ID bits
             consumed through int32 views by the selection/CSR ABI. Retained by the returned plan.
         prefix_lens: CUDA int32 per-query valid-page-prefix bounds used for dynamic selection.
@@ -119,11 +132,14 @@ def prepare_index(index_q, index_k, *, index_q_scales, index_page_indices,
             until the queued invocation completes.
         contiguous_unpacked: True for one unpacked request; False selects packed request metadata
             and map handling.
+        lean192: Requested preparation-only auto/on/off policy. Forced ON rejects
+            ineligible inputs before a bound Index kernel can be executed.
 
     Returns:
         OptimizedIndexPlan retaining buffers, direct map views and selected launch metadata.
         Preparation may allocate/compile and must run outside capture.
     """
+    validate_lean192(lean192)
     q, k, v = original_q, original_k, original_v
     total_q = q.shape[0]
     batch = len(q_lens)
@@ -358,7 +374,8 @@ def prepare_index(index_q, index_k, *, index_q_scales, index_page_indices,
         cutedsl_packed_partitions=cutedsl_packed_partitions,
         cutedsl_packed_pages=cutedsl_packed_pages,
         cutedsl_packed_tile_metadata=cutedsl_packed_tile_metadata,
-        _lean192_early_router=lean192_early_router,
+        _lean192_early_router=resolve_lean192(lean192, lean192_early_router),
+        lean192_mode=lean192,
     )
     bind_score_operands(plan)
     return plan

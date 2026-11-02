@@ -75,6 +75,19 @@ class CutedslPipeline:
         """
         return self._owner.backend
 
+    @property
+    def lean192(self) -> str:
+        """Requested preparation policy; immutable for this plan's lifetime."""
+        if self.backend == "optimized":
+            return self.plan._state.options["lean192"]
+        return "auto"
+
+    @property
+    def lean192_enabled(self) -> bool:
+        """Whether this plan currently binds the actual 192-thread Indexer."""
+        return bool(self.backend == "optimized"
+                    and self.plan._state.index.lean192_bound)
+
     def run(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Submit one invocation on the current CUDA stream.
 
@@ -147,10 +160,11 @@ class CutedslPipeline:
                 the queued invocation completes.
             index_page_indices: Replacement CUDA int32 logical-to-physical Index page IDs, compact
                 1-D active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows
-                directly: one adjacent contiguous storage span, each row aligned to 16 bytes for
-                unpacked/MX or 4 bytes for packed floating Index. Gaps/strides are rejected;
-                compact maps avoid row padding. Supply an explicit replacement map matching the
-                prepared metadata; None does not regenerate a map during rebind.
+                directly: one adjacent contiguous span with a 16-byte base alignment for
+                unpacked/MX or 4-byte base alignment for packed floating Index. Individual
+                compact request rows need not be 16-byte aligned. Gaps/strides are rejected.
+                Supply an explicit replacement map matching the prepared metadata; None does
+                not regenerate a map during rebind.
             page_table: Replacement paged-attention map with the prepared shape/stride/dtype/device
                 and valid physical page IDs.
             out: Replacement writable BF16 output with prepared shape/stride/device and disjoint
@@ -212,6 +226,7 @@ def prepare_cutedsl_pipeline(
     partial_dtype: torch.dtype | None = None,
     out: torch.Tensor | None = None,
     backend: str = "default",
+    lean192: str = "auto",
 ) -> CutedslPipeline:
     """Prepare a reusable sparse-prefill pipeline on Hopper or Blackwell.
 
@@ -245,9 +260,10 @@ def prepare_cutedsl_pipeline(
             synchronize. Optimized requires 0<Q<=8192 and Q<=KV<=1048576 per request.
         index_page_indices: Optional CUDA int32 logical-to-physical Index page IDs, compact 1-D
             active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows directly:
-            one adjacent contiguous storage span, each row aligned to 16 bytes for unpacked/MX or 4
-            bytes for packed floating Index. Gaps/strides are rejected; compact maps avoid row
-            padding. None creates the backend default mapping.
+            one adjacent contiguous storage span with a 16-byte base alignment for unpacked/MX
+            or 4-byte base alignment for packed floating Index. Individual compact request rows
+            need not be 16-byte aligned. Gaps/strides are rejected. None creates the backend
+            default mapping.
         page_table: Optional contiguous CUDA int32 [B,>=ceil(KV/128)] attention logical-to-physical
             page table, required for paged K/V. Each active ID addresses a physical K/V page.
         logical_k_tokens: Optional logical KV token count for one unpacked request, excluding
@@ -263,6 +279,15 @@ def prepare_cutedsl_pipeline(
             inputs. None allocates plan-owned output; supplied storage stays caller-owned.
         backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
             (SM100/SM103). Selection is fixed for the plan lifetime.
+        lean192: Optimized Index policy: "auto" preserves existing dispatch, "off"
+            disables only Lean192, and "on" requires its existing eligible SM103
+            BF16 dense single-request Q8192 geometry. Unsupported forced ON raises
+            ValueError; it never falls back silently. Fixed for the plan lifetime.
+            Non-auto values require backend="optimized". Inspect lean192_enabled
+            on the returned pipeline for the actual resolved specialization.
+            Forced ON rejects supplied mutable Index maps and checked rebind;
+            prepare a new dense plan to replace its operand addresses.
+            The compiler target must also support SM103 Lean192.
 
     Returns:
         CutedslPipeline retaining operand/workspace references. run() returns live BF16 O
@@ -270,6 +295,8 @@ def prepare_cutedsl_pipeline(
         runs overwrite these buffers.
     """
     _validate_backend(backend)
+    from .backends._index_options import validate_lean192
+    validate_lean192(lean192, backend=backend)
     from .backends._binding import validate_output_aliases
     validate_output_aliases(out, index_q, index_k, q, k, v, index_q_scales,
                            index_page_indices, page_table, cu_seqlens_q, cu_seqlens_k)
@@ -313,6 +340,7 @@ def prepare_cutedsl_pipeline(
         k,
         v,
         backend=backend,
+        lean192=lean192,
         index_q_scales=index_q_scales,
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
@@ -346,6 +374,7 @@ def prepare_sm100(
     check_device_inputs: bool = True,
     fixed_stream: torch.cuda.Stream | None = None,
     backend: str = "default",
+    lean192: str = "auto",
 ) -> CutedslPipeline:
     """Prepare a Blackwell pipeline with explicit validation and stream controls.
 
@@ -379,9 +408,10 @@ def prepare_sm100(
             synchronize. Optimized requires 0<Q<=8192 and Q<=KV<=1048576 per request.
         index_page_indices: Optional CUDA int32 logical-to-physical Index page IDs, compact 1-D
             active IDs or request rows [B,>=ceil(KV/128)]. Optimized binds active rows directly:
-            one adjacent contiguous storage span, each row aligned to 16 bytes for unpacked/MX or 4
-            bytes for packed floating Index. Gaps/strides are rejected; compact maps avoid row
-            padding. None creates the backend default mapping.
+            one adjacent contiguous storage span with a 16-byte base alignment for unpacked/MX
+            or 4-byte base alignment for packed floating Index. Individual compact request rows
+            need not be 16-byte aligned. Gaps/strides are rejected. None creates the backend
+            default mapping.
         page_table: Optional contiguous CUDA int32 [B,>=ceil(KV/128)] attention logical-to-physical
             page table, required for paged K/V. Each active ID addresses a physical K/V page.
         logical_k_tokens: Optional logical KV token count for one unpacked request, excluding
@@ -402,11 +432,21 @@ def prepare_sm100(
             None lets preparation create/select a stream when overlap is enabled.
         backend: Implementation selector: "default" or "optimized", both on SM100/SM103.
             Selection is fixed for the plan lifetime.
+        lean192: Preparation-only "auto"/"on"/"off" Index policy. Auto preserves
+            existing dispatch; off changes only the optimized Lean192 selection.
+            On requires the existing eligible SM103 BF16 dense B1/Q8192 policy
+            and raises instead of falling back. Non-auto requires optimized.
+            The returned lean192_enabled reports the actual bound specialization.
+            Forced ON does not accept supplied mutable Index maps or checked
+            rebind. Use a new dense plan or auto/off for replacement bindings.
+            An incompatible compiler target also rejects forced ON.
 
     Returns:
         CutedslPipeline with the same live O/LSE/routes contract as prepare_cutedsl_pipeline.
     """
     _validate_backend(backend)
+    from .backends._index_options import validate_lean192
+    validate_lean192(lean192, backend=backend)
     if not q.is_cuda or torch.cuda.get_device_capability(q.device) not in ((10, 0), (10, 3)):
         raise ValueError("prepare_sm100 requires SM100 or SM103 CUDA tensors")
     from .backends._binding import validate_output_aliases
@@ -418,11 +458,14 @@ def prepare_sm100(
         raise ValueError("packed lengths are owned by cu_seqlens_k")
     if backend == "optimized":
         from .backends.optimized.runtime import prepare_sm100 as prepare
+        index_options = {"lean192": lean192}
     else:
         from .backends.default import prepare_sm100 as prepare
+        index_options = {}
     return prepare(index_q, index_k, q, k, v, index_q_scales=index_q_scales,
                    cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k,
                    request_lens=request_lens, index_page_indices=index_page_indices,
                    page_table=page_table, logical_k_tokens=logical_k_tokens,
                    overlap_fixed_score=overlap_fixed_score, partial_dtype=partial_dtype,
-                   out=out, check_device_inputs=check_device_inputs, fixed_stream=fixed_stream)
+                   out=out, check_device_inputs=check_device_inputs, fixed_stream=fixed_stream,
+                   **index_options)

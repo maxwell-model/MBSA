@@ -32,19 +32,19 @@ import torch
 from cutlass import Float32, Int32
 from cutlass.cute.runtime import from_dlpack
 
-from mbsa.backends.optimized.msa.cute.src.sm100.fwd.combine import combine, combine_shuffled
-from mbsa.backends.optimized.msa.cute.src.sm100.fwd.atten_fwd import SparseAttentionForwardSm100
-from mbsa.backends.optimized.msa.cute.src.sm100.fwd.config import (
+from .src.sm100.fwd.combine import combine, combine_shuffled
+from .src.sm100.fwd.atten_fwd import SparseAttentionForwardSm100
+from .src.sm100.fwd.config import (
     Cfg, MSA_OUTPUT_TILE_ROWS, OutputLayout, _validate_msa_operand_roles, select_msa_cfg,
 )
-from mbsa.backends.optimized.msa.cute.src.sm100.fwd.atten_fwd_nvfp4_kv import SparseAttentionForwardNvfp4KvSm100
-from mbsa.backends.optimized.msa.cute.src.sm100.prepare_scheduler import (
+from .src.sm100.fwd.atten_fwd_nvfp4_kv import SparseAttentionForwardNvfp4KvSm100
+from .src.sm100.prepare_scheduler import (
     SparseAttentionSchedule,
     prepare_sparse_fwd_schedule_and_split,
     prepare_sparse_fwd_tma_tile_map,
 )
-from mbsa.backends.optimized.msa.cute.src.common.cute_dsl_utils import to_cute_tensor as to_cute_tensor_kvouter
-from mbsa.backends.optimized.msa.cute.src.common.tma_utils import (
+from .src.common.cute_dsl_utils import to_cute_tensor as to_cute_tensor_kvouter
+from .src.common.tma_utils import (
     create_q_gather4_tma_desc,
     create_ragged_o_tma_desc,
 )
@@ -58,6 +58,42 @@ _SUPPORTED_FWD_DTYPES = (torch.bfloat16, torch.float8_e4m3fn)
 _SUPPORTED_FWD_MMA_DTYPES = (torch.bfloat16, torch.float8_e4m3fn)
 
 
+def _get_q_gather4_tma_desc(schedule, tensor: torch.Tensor, *, box_x: int) -> torch.Tensor:
+    """Keep warmed Q descriptors alive with their caller-owned schedule."""
+    key = (tensor.device.index, tensor.data_ptr(), tuple(tensor.shape),
+           tuple(tensor.stride()), tensor.dtype, int(box_x))
+    cache = schedule._q_gather4_desc_cache
+    desc = cache.get(key)
+    if desc is None:
+        with torch.cuda.device(tensor.device):
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError(
+                    "warm gather4 with the same Q storage and schedule before Graph capture"
+                )
+        desc = create_q_gather4_tma_desc(tensor, box_x=box_x)
+        cache[key] = desc
+    desc.record_stream(torch.cuda.current_stream(tensor.device))
+    return desc
+
+
+def _get_ragged_partials(schedule, q, *, tile_rows, dim, partial_dtype):
+    """Retain only private partials; returned public O/LSE stay caller-visible."""
+    key = (q.device.index, tuple(q.shape), int(tile_rows), int(dim), partial_dtype)
+    partials = schedule._ragged_partial_cache.get(key)
+    if partials is None:
+        with torch.cuda.device(q.device):
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError("warm ragged workspace with this schedule before Graph capture")
+        partials = (
+            torch.empty(tile_rows, dim, dtype=partial_dtype, device=q.device),
+            torch.empty(tile_rows, dtype=torch.float32, device=q.device),
+        )
+        schedule._ragged_partial_cache[key] = partials
+    for tensor in partials:
+        tensor.record_stream(torch.cuda.current_stream(q.device))
+    return partials
+
+
 def _get_ragged_o_tma_desc(
     owner: torch.Tensor, tensor: torch.Tensor
 ) -> torch.Tensor:
@@ -68,6 +104,9 @@ def _get_ragged_o_tma_desc(
         cached[1].record_stream(torch.cuda.current_stream(tensor.device))
         return cached[1]
 
+    with torch.cuda.device(tensor.device):
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("warm ragged output with the same workspace before Graph capture")
     desc = create_ragged_o_tma_desc(tensor)
 
     def discard(_):
@@ -1230,7 +1269,12 @@ def _sparse_atten_csr_varlen_forward(
     )
 
     if workspace is None:
-        if shuffled_output:
+        if shuffled_output and cfg.ragged_tma_store:
+            O_partial, LSE_partial = _get_ragged_partials(
+                schedule, q, tile_rows=schedule.tma_tile_capacity * MSA_OUTPUT_TILE_ROWS,
+                dim=dim, partial_dtype=partial_dtype,
+            )
+        elif shuffled_output:
             tile_rows = schedule.tma_tile_capacity * MSA_OUTPUT_TILE_ROWS
             O_partial = torch.empty(
                 tile_rows,
@@ -1486,14 +1530,6 @@ def _call_sparse_forward_sm100_csr_varlen(
         v_kernel = v
     O_partial_flat = O_partial.reshape(-1, head_dim).contiguous()
     Q_flat = q.reshape(-1, head_dim).contiguous()
-    Q_gather4_desc = (
-        create_q_gather4_tma_desc(
-            Q_flat,
-            box_x=128 if q.dtype == torch.float8_e4m3fn else 64,
-        )
-        if qhead_per_kv in (1, 2, 4)
-        else None
-    )
     if schedule is None:
         schedule = prepare_sparse_fwd_schedule_and_split(
             k2q_row_ptr=k2q_row_ptr,
@@ -1517,6 +1553,13 @@ def _call_sparse_forward_sm100_csr_varlen(
     work_capacity = schedule.work_capacity
     if not use_prepare_scheduler or scheduler_metadata is None or work_count is None or work_capacity <= 0:
         raise RuntimeError("sparse forward requires a non-empty prepared schedule")
+    Q_gather4_desc = (
+        _get_q_gather4_tma_desc(
+            schedule, Q_flat, box_x=128 if q.dtype == torch.float8_e4m3fn else 64
+        )
+        if qhead_per_kv in (1, 2, 4)
+        else None
+    )
     compact_batch1_schedule = schedule.metadata_format == "compact_batch1_v1"
     inferred_full_score_tiles = (
         not causal
@@ -1625,7 +1668,7 @@ def _call_sparse_forward_sm100_csr_varlen(
         bool(use_tmem_load_reduce),
     )
     if key not in _compile_cache:
-        from mbsa.backends.optimized.msa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from .src.common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:
@@ -1784,14 +1827,6 @@ def _call_sparse_forward_sm100_csr_varlen_nvfp4_kv(
     v_kernel = v
     O_partial_flat = O_partial.reshape(-1, head_dim).contiguous()
     Q_flat = q.reshape(-1, head_dim).contiguous()
-    Q_gather4_desc = (
-        create_q_gather4_tma_desc(
-            Q_flat,
-            box_x=128 if q.dtype == torch.float8_e4m3fn else 64,
-        )
-        if qhead_per_kv in (1, 2, 4)
-        else None
-    )
     if schedule is None:
         schedule = prepare_sparse_fwd_schedule_and_split(
             k2q_row_ptr=k2q_row_ptr,
@@ -1815,6 +1850,13 @@ def _call_sparse_forward_sm100_csr_varlen_nvfp4_kv(
     work_capacity = schedule.work_capacity
     if not use_prepare_scheduler or scheduler_metadata is None or work_count is None or work_capacity <= 0:
         raise RuntimeError("KVFP4 sparse forward requires a non-empty prepared schedule")
+    Q_gather4_desc = (
+        _get_q_gather4_tma_desc(
+            schedule, Q_flat, box_x=128 if q.dtype == torch.float8_e4m3fn else 64
+        )
+        if qhead_per_kv in (1, 2, 4)
+        else None
+    )
 
     key = (
         "sparse_forward_sm100_csr_varlen_nvfp4_kv",
@@ -1835,7 +1877,7 @@ def _call_sparse_forward_sm100_csr_varlen_nvfp4_kv(
         bool(has_v_global_scale),
     )
     if key not in _compile_cache:
-        from mbsa.backends.optimized.msa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from .src.common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:

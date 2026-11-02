@@ -29,7 +29,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from mbsa.backends.optimized.msa.cute.src.sm100.prepare_k2q_csr import SparseK2qCsrBuilderSm100
+from .src.sm100.prepare_k2q_csr import SparseK2qCsrBuilderSm100
 
 
 def q2k_to_k2q(

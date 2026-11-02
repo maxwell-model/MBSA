@@ -30,7 +30,7 @@ from typing import Any, Optional, Tuple
 import torch
 
 try:
-    from mbsa.backends.optimized import msa as fmha_sm100
+    from .. import msa as fmha_sm100
     _MSA_OK = True
 except (ImportError, RuntimeError):
     # See kernels/msa_indexer_score.py: a bare `import fmha_sm100` allocates

@@ -25,12 +25,23 @@ class DirectPageMapTest(unittest.TestCase):
         self.assertEqual(view.data_ptr(), storage[1:].data_ptr())
         self.assertEqual(view.tolist(), list(range(1, 8)))
 
+    def test_compact_mx_rows_require_only_flat_operand_alignment(self):
+        counts = (41, 58, 73, 30)
+        storage = torch.arange(sum(counts), dtype=torch.int32)
+        rows = storage.split(counts)
+        view = page_operand_view(rows, 16)
+        self.assertEqual(view.data_ptr(), storage.data_ptr())
+        self.assertEqual(view.numel(), sum(counts))
+        self.assertEqual(view.tolist(), storage.tolist())
+        self.assertNotEqual(rows[1].data_ptr() % 16, 0)
+        rows[2][0] = 999
+        self.assertEqual(view[sum(counts[:2])].item(), 999)
+
     def test_reject_incompatible_active_rows(self):
         storage = torch.arange(32, dtype=torch.int32)
         cases = [((storage[::2],), 4), ((storage[1:9],), 16),
                  ((storage[:4], storage[8:12]), 4),
-                 ((storage[:4], storage[4:8].clone()), 4),
-                 ((storage[:3], storage[3:8]), 16), ((), 4)]
+                 ((storage[:4], storage[4:8].clone()), 4), ((), 4)]
         for rows, alignment in cases:
             with self.subTest(alignment=alignment, lengths=[r.numel() for r in rows]):
                 with self.assertRaisesRegex(ValueError, "direct Index page map"):

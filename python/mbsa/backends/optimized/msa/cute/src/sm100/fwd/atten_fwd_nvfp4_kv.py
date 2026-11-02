@@ -28,18 +28,18 @@ from cutlass.cutlass_dsl import BaseDSL
 
 from quack import copy_utils
 
-from mbsa.backends.optimized.msa.cute.src.common.cute_dsl_utils import assume_tensor_aligned
-from mbsa.backends.optimized.msa.cute.src.common import utils
-from mbsa.backends.optimized.msa.cute.src.common import pipeline
-from mbsa.backends.optimized.msa.cute.src.common import mma_sm100_desc as sm100_desc
-from mbsa.backends.optimized.msa.cute.src.common import blackwell_helpers as sm100_helpers
-from mbsa.backends.optimized.msa.cute.src.common.softmax import SoftmaxSm100
-from mbsa.backends.optimized.msa.cute.src.common.named_barrier import NamedBarrierFwdSm100
-from mbsa.backends.optimized.msa.cute.src.common.mask import AttentionMask
-from mbsa.backends.optimized.msa.cute.src.common.seqlen_info import SeqlenInfoQK
+from ...common.cute_dsl_utils import assume_tensor_aligned
+from ...common import utils
+from ...common import pipeline
+from ...common import mma_sm100_desc as sm100_desc
+from ...common import blackwell_helpers as sm100_helpers
+from ...common.softmax import SoftmaxSm100
+from ...common.named_barrier import NamedBarrierFwdSm100
+from ...common.mask import AttentionMask
+from ...common.seqlen_info import SeqlenInfoQK
 # Shared raw PTX helpers and layout conversions used by the lean kernel.
-from mbsa.backends.optimized.msa.cute.src.common.paged_kv import PagedKVManager
-from mbsa.backends.optimized.msa.cute.src.common.tma_utils import (
+from ...common.paged_kv import PagedKVManager
+from ...common.tma_utils import (
     tma_gather4_cached,
     tma_gather4_prefetch,
     prefetch_tma_desc_raw,

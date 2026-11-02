@@ -22,18 +22,18 @@ from typing import Any
 
 import torch
 
-from mbsa.backends.optimized.kernels.route_padding import canonicalize_dynamic_top16_padding
+from .route_padding import canonicalize_dynamic_top16_padding
 
-from mbsa.backends.optimized.kernels.merge import (
+from .merge import (
     _merge_two_attention_states_cutedsl,
 )
-from mbsa.backends.optimized.kernels.msa_sparse_attn_prefill import (
+from .msa_sparse_attn_prefill import (
     allocate_csr_scratch,
     build_csr,
     sparse_gqa_stage2_attn_fwd_msa_prefill,
 )
-from mbsa.backends.optimized.kernels.plan import FwdTilePlan, PrefillPolicy, SPEC, dynamic_partial_capacity
-from mbsa.backends.optimized.bsa.cute_dsl.sparse.bsa_attn_sm100_blk128 import (
+from .plan import FwdTilePlan, PrefillPolicy, SPEC, dynamic_partial_capacity
+from ..bsa.cute_dsl.sparse.bsa_attn_sm100_blk128 import (
     BsaOutputLayout,
     bsa_attn_sm100_blk128_fwd,
 )
@@ -136,11 +136,11 @@ class UnifiedAlignedPrefillPlan:
     def _refresh_dynamic_output_map(self) -> None:
         if self.dynamic_kernel_cfg is None:
             return
-        from mbsa.backends.optimized.msa.cute.src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
+        from ..msa.cute.src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
 
         if self.dynamic_kernel_cfg.output_layout is not OutputLayout.SHUFFLED:
             return
-        from mbsa.backends.optimized.msa.cute.src.sm100.prepare_scheduler import (  # noqa: PLC0415
+        from ..msa.cute.src.sm100.prepare_scheduler import (  # noqa: PLC0415
             prepare_sparse_fwd_tma_tile_map,
         )
 
@@ -210,7 +210,7 @@ class UnifiedAlignedPrefillPlan:
                 or self.lpt_scheduler_metadata is None
             ):
                 raise RuntimeError("LPT schedule workspace was not prepared")
-            from mbsa.backends.optimized.msa.cute.src.sm100.build_k2q_csr import (  # noqa: PLC0415
+            from ..msa.cute.src.sm100.build_k2q_csr import (  # noqa: PLC0415
                 run_reorder_schedule_qcount_bucket16,
             )
 
@@ -542,7 +542,7 @@ def prepare_unified_aligned_prefill(
         raise ValueError("valid_kv_tokens does not match per-request KV lengths")
 
     if dynamic_kernel_cfg is None:
-        from mbsa.backends.optimized.msa.cute.src.sm100.fwd.config import select_msa_cfg  # noqa: PLC0415
+        from ..msa.cute.src.sm100.fwd.config import select_msa_cfg  # noqa: PLC0415
 
         inferred_full_score_tiles = (
             bool(dynamic_full_score_tiles)
@@ -620,7 +620,7 @@ def prepare_unified_aligned_prefill(
     shuffled_output = False
     partial_capacity = dynamic_partial_capacity(skv)
     if dynamic_kernel_cfg is not None:
-        from mbsa.backends.optimized.msa.cute.src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
+        from ..msa.cute.src.sm100.fwd.config import OutputLayout  # noqa: PLC0415
 
         shuffled_output = (
             dynamic_kernel_cfg.output_layout is OutputLayout.SHUFFLED
@@ -628,7 +628,7 @@ def prepare_unified_aligned_prefill(
     if shuffled_output:
         if batch != 1:
             raise ValueError("shuffled MSA output currently requires batch size one")
-        from mbsa.backends.optimized.msa.cute.src.sm100.prepare_scheduler import (  # noqa: PLC0415
+        from ..msa.cute.src.sm100.prepare_scheduler import (  # noqa: PLC0415
             prepare_sparse_fwd_tma_tile_map,
         )
 
@@ -671,7 +671,7 @@ def prepare_unified_aligned_prefill(
         (total_q, SPEC.q_heads), dtype=torch.float32, device=q.device
     )
     if shuffled_output:
-        from mbsa.backends.optimized.msa.cute.src.sm100.fwd.config import MSA_OUTPUT_TILE_ROWS  # noqa: PLC0415
+        from ..msa.cute.src.sm100.fwd.config import MSA_OUTPUT_TILE_ROWS  # noqa: PLC0415
 
         tile_rows = schedule.tma_tile_capacity * MSA_OUTPUT_TILE_ROWS
         partial_o = torch.empty(

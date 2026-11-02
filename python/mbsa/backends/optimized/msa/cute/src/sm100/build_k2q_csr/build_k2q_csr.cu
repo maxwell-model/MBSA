@@ -62,6 +62,24 @@ __device__ __forceinline__ int atomic_inc_int16_packed(
     return (old >> shift) & 0xFFFF;
 }
 
+// Reserve one same-row group, then assign slots in increasing lane/query order.
+// All valid lanes call the matching collectives; no atomic return order is assumed.
+__device__ __forceinline__ int warp_ordered_slot(
+    int* base_int32, int row, unsigned int valid_mask, int lane)
+{
+    unsigned int peers = __match_any_sync(valid_mask, row);
+    int leader = __ffs(peers) - 1;
+    int base = 0;
+    if (lane == leader) {
+        int shift = (row & 1) << 4;
+        int old = atomicAdd(&base_int32[row >> 1], __popc(peers) << shift);
+        base = (old >> shift) & 0xFFFF;
+    }
+    base = __shfl_sync(valid_mask, base, leader);
+    unsigned int lower = lane == 0 ? 0u : ((1u << lane) - 1u);
+    return base + __popc(peers & lower);
+}
+
 // Read 16-bit half from packed int32 storage.
 __device__ __forceinline__ int read_int16_packed(int const* base_int32, int row) {
     int v = base_int32[row >> 1];
@@ -521,8 +539,8 @@ __global__ void k2q_tile_prefix_smem_kernel(
 // ---------------------------------------------------------------------------
 // kQPerIter * kTopK lanes are active per warp iter; remaining lanes idle.
 // For kTopK=16, kQPerIter=2 uses all 32 lanes; for kTopK=8, kQPerIter=4.
-// CORRECTNESS NOTE: relies on lane-ordered SMEM atomicAdd return values
-// within a single warp instruction (verified on SM100; tests pass).
+// Same-row lanes reserve one range and assign lane-ordered slots explicitly.
+// Iterations, warp ranges and CTA prefix ranges preserve increasing query order.
 //
 // SMEM cursor stored as packed int16 (two cursors per int32). Per-warp
 // row count must stay < 32768 (~q_per_warp * kTopK at max sink), which
@@ -646,7 +664,7 @@ __global__ void k2q_scatter_kernel(
                         split_counts[(size_t)q_abs * H + h] = valid_count;
                     }
                     if (valid_edge) {
-                        int slot = atomic_inc_int16_packed(my_cursor, r);
+                        int slot = warp_ordered_slot(my_cursor, r, valid_mask, lane);
                         int out_pos = abs_v[u] + slot;
                         head_qidx[out_pos] = qloc[u];
                         if (qsplit_idx != nullptr) {
@@ -693,7 +711,7 @@ __global__ void k2q_scatter_kernel(
                     split_counts[(size_t)my_qi * H + h] = valid_count;
                 }
                 if (valid_edge) {
-                    int slot = atomic_inc_int16_packed(my_cursor, row);
+                    int slot = warp_ordered_slot(my_cursor, row, valid_mask, lane);
                     int out_pos = my_abs_base[row] + slot;
                     head_qidx[out_pos] = q_local;
                     if (qsplit_idx != nullptr) {

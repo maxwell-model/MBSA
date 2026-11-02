@@ -4,6 +4,8 @@
 
 import importlib.util
 import itertools
+import gc
+import weakref
 from pathlib import Path
 import sys
 import unittest
@@ -12,10 +14,66 @@ from unittest.mock import patch, sentinel
 
 import torch
 
-from mbsa.backends._binding import stage_plan, validate_output_aliases
+from mbsa.backends._binding import publish_plan, stage_plan, validate_output_aliases
+from mbsa.backends._lifecycle import PreparedOwnerBase
+
+
+class _BindingObject:
+    pass
+
+
+class _LifetimePlan:
+    def __init__(self):
+        self.payload = torch.empty(256)
+        self.attention = _BindingObject()
+        self.attention.tile_plan = _BindingObject()
+        self.calls = 0
+
+    def run(self):
+        self.calls += 1
+        return self.calls
 
 
 class BindingTest(unittest.TestCase):
+    def test_owner_releases_plan_and_operands_without_cyclic_gc(self):
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            plan = _LifetimePlan()
+            owner = PreparedOwnerBase(plan)
+            refs = weakref.ref(plan), weakref.ref(plan.payload)
+            del plan, owner
+            self.assertTrue(all(ref() is None for ref in refs))
+        finally:
+            if enabled:
+                gc.enable()
+
+    def test_capture_tracking_survives_stage_and_publish(self):
+        plan = _LifetimePlan()
+        owner = PreparedOwnerBase(plan)
+        staged = stage_plan(plan)
+        self.assertIs(type(staged), type(plan))
+        self.assertNotIn('run', vars(plan))
+        with patch.object(torch.cuda, 'is_current_stream_capturing', return_value=True):
+            self.assertEqual(staged.run(), 1)
+        self.assertFalse(plan._binding_external_capture)
+        self.assertTrue(staged._binding_external_capture)
+        publish_plan(plan, staged)
+        self.assertIs(owner.plan, plan)
+        with patch.object(torch.cuda, 'is_current_stream_capturing', return_value=False):
+            self.assertEqual(owner.run(), 2)
+        self.assertTrue(plan._binding_external_capture)
+        self.assertIs(plan.run.__self__, plan)
+
+    def test_capture_wrapper_type_is_cached_and_not_nested(self):
+        first, second = _LifetimePlan(), _LifetimePlan()
+        owners = PreparedOwnerBase(first), PreparedOwnerBase(second)
+        self.assertIs(type(first), type(second))
+        before = type(first)
+        another_owner = PreparedOwnerBase(first)
+        self.assertIs(type(first), before)
+        self.assertIs(owners[0].plan, another_owner.plan)
+
     def test_optimized_selection_uses_replacement_factory(self):
         from mbsa.api import prepare_sm100, _validate_backend
         from mbsa.backends.optimized import runtime
@@ -156,6 +214,16 @@ class MsaConfig(unittest.TestCase):
                 validate(cfg, False)
         validate(None, True)
         validate(self.config.MSA_4WG_STATIC_GENERIC, True)
+
+
+class CompiledKernelCount(unittest.TestCase):
+    def test_counts_the_separate_mixed_merge_cache(self):
+        from mbsa.serving import compiled_kernel_count
+        module = SimpleNamespace(_MERGE_KERNELS={})
+        with patch.dict(sys.modules, {'mbsa.backends.optimized.kernels.merge': module}):
+            before = compiled_kernel_count()
+            module._MERGE_KERNELS.update({0: sentinel.first, 1: sentinel.second})
+            self.assertEqual(compiled_kernel_count(), before + 2)
 
 
 if __name__ == "__main__":

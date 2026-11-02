@@ -34,7 +34,7 @@
       "upstream_path": "kernels/unified_block_sparse_prefill.py",
       "upstream_git_blob": "dbb1be896bb17c80e8c26ad19e30bfae0ebbcfcd",
       "relationship": "derived-and-modified",
-      "local_sha256": "d466bda14363dbf1315a6730d965546a03b08031efcebc0ce428808556e264d0"
+      "local_sha256": "566221250cbf3ffb33d7bb7a33f8cdcffeb443cfad6e73774979a832c8a4900b"
     },
     {
       "path": "python/mbsa/backends/optimized/kernels/plan.py",
@@ -55,7 +55,7 @@
       "upstream_path": "kernels/msa_sparse_attn_prefill.py",
       "upstream_git_blob": "4cd400d359e502ff2560b017274bb28fb45c9373",
       "relationship": "derived-and-modified",
-      "local_sha256": "1248b6e3c637edc1eb21d83d5ffefd0116df45e98eff049569f5459b6ef367c5"
+      "local_sha256": "c73b47e1b3bb169b5a1ca17f08b476e5c167f0b7cb118b5885839811aba8ca13"
     },
     {
       "path": "python/mbsa/backends/optimized/kernels/msa_block_sparse/_vllm_compat.py",
@@ -76,7 +76,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/interface.py",
       "upstream_git_blob": "acf502e7e30a5cb5403ce7ca31a8696151d136cc",
       "relationship": "derived-and-modified",
-      "local_sha256": "3a536e41a2efefb0a55908509473d5b39bb575d72a3c8ac72c64d47df5546036"
+      "local_sha256": "194d4be3ebeded72219dee2b5cf6ee3bf4e1bdf923853ee7e6c24562c9fcfdcb"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/quantize.py",
@@ -90,7 +90,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/sparse_index_utils.py",
       "upstream_git_blob": "eb2896929497d14581ad5e9c5e956d4eb12c6d36",
       "relationship": "derived-and-modified",
-      "local_sha256": "02ddd46d5ff48c856aaae35e46c954af62dda999e515eec0e3426c5dddf2c6ec"
+      "local_sha256": "a3d7be0952e1fb3faf452379645a0a07ba7ef90f3a18f6314a9500549dad52a0"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/common/aot_cache.py",
@@ -132,7 +132,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/mask.py",
       "upstream_git_blob": "bfd2354484506517cabae105457e17b2b8e32c77",
       "relationship": "derived-and-modified",
-      "local_sha256": "41606e146e1c563a0edaa65d8845994d923728b13b483faaa2a08df8463ea155"
+      "local_sha256": "eb54de9df6ad88880da8a554aa0fc59db43505703031ebbe1e34c5caf03693a8"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/common/mma_sm100_desc.py",
@@ -188,7 +188,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/tile_scheduler.py",
       "upstream_git_blob": "f7aad9e212c87829bbe584e65f2419142ff0c3f8",
       "relationship": "derived-and-modified",
-      "local_sha256": "80fd185ad714cab20ececff6408bb21e58db7121a29d581daf3ca2b8c910ec9f"
+      "local_sha256": "4ba3087c78553fcdfa599297f5f31ea0177dfbff3920ab52ada3b39bf5616008"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/common/tma_utils.py",
@@ -202,7 +202,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/common/utils.py",
       "upstream_git_blob": "d57bb050921b764a832cff0c3474939647f88551",
       "relationship": "derived-and-modified",
-      "local_sha256": "6331849970fee62df3bdc99c0f14cdeb42fd2150dd180cb9170b13f1fadb7ced"
+      "local_sha256": "05b6e4dbdc0ed521991d1cec6a8be1a977f232b6dcf6ae6b6269fd05d1c0fd7a"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/build_k2q_csr/__init__.py",
@@ -216,7 +216,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/build_k2q_csr/build_k2q_csr.cu",
       "upstream_git_blob": "33ce23af1633a2fb561c55aada238863b4073729",
       "relationship": "derived-and-modified",
-      "local_sha256": "06455aba2feadf0d47b63252e3a2c0fa5bb4cf86d30e0aeefba52771a592c62d"
+      "local_sha256": "3e23c87979f791332ef3d05f02182f1b355e795fb21db5d85c8b5e220d3e461b"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/__init__.py",
@@ -230,21 +230,21 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/atten_fwd.py",
       "upstream_git_blob": "4811d2aca7b2d897103a02e609d4196ebfbc783f",
       "relationship": "derived-and-modified",
-      "local_sha256": "e9947686dbf12c010d9199bf7f58e41a12c6d1df63d8bf86e83a445447a80b3b"
+      "local_sha256": "9719d3ff6196517095c9fc2ff1aa1659e68427e9fe62057d79f4ed8549fcbcf1"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/atten_fwd_nvfp4_kv.py",
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/atten_fwd_nvfp4_kv.py",
       "upstream_git_blob": "1e2bd4afd0a8a1827135ce2bd4bea1898ad8f97b",
       "relationship": "derived-and-modified",
-      "local_sha256": "5f5d585edda26d26608954ebecd32a044d31a95dfed9fd0201c99ea29feb75a3"
+      "local_sha256": "6ad6ca5e6f7732462678c4032e3547307efaf1bdeaa07c4a89618618e0e06a58"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/combine.py",
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/fwd/combine.py",
       "upstream_git_blob": "06254a2c080155de626c5bd88f6a67f80c2684a5",
       "relationship": "derived-and-modified",
-      "local_sha256": "442c7cadf5c6613c6495fa16caada6adea4af222c39dfb11049f9a9f757e51e0"
+      "local_sha256": "755b682ebd504ce30cd0f1e0e71d054d605c8473e87c5fd1e8650c38d0d19e00"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/config.py",
@@ -258,14 +258,14 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/prepare_k2q_csr.py",
       "upstream_git_blob": "c1404ec894c32e6f31c8ee324ba97c02783b8a7c",
       "relationship": "derived-and-modified",
-      "local_sha256": "1cdd28bd24f1584922b65bcd7e5d73ca8c2dff7415d3caf14789332fda93591c"
+      "local_sha256": "733a3bffc40004d9d6bd40383b5ff1329b2cefaf991b7046187844e005aeb3c4"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/prepare_scheduler.py",
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/prepare_scheduler.py",
       "upstream_git_blob": "c85cb3b7355eef1c33f70e840d279eeebb4d5dd3",
       "relationship": "derived-and-modified",
-      "local_sha256": "086ea57c4ab3205c9a7336228ce099f799f8fd2270cf46072cfa4378b062941a"
+      "local_sha256": "afac738964a6238bdd58b5d67fd9df2a6f925d87b59de2ec1aa42b504e146871"
     },
     {
       "path": "python/mbsa/backends/optimized/bsa/api_logging.py",
@@ -371,7 +371,7 @@
       "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/flash_fwd_sm100.py",
       "upstream_git_blob": "eea6bb0fd3a858e13a3c5d8ccd6d1e531e370928",
       "relationship": "derived-and-modified",
-      "local_sha256": "d7a1a5f0be482875defb1e82a542dbae2ff275840c3a579528e2f6620baa8f17",
+      "local_sha256": "3901e6895fe681e539ba41bcb0ddd2eca3d8416400f9d582b6555aebda5732b1",
       "repository": "https://github.com/flashinfer-ai/flashinfer",
       "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
     },
@@ -478,13 +478,13 @@
       },
       "relationship": "derived-and-refactored",
       "license": "Apache-2.0",
-      "local_sha256": "b635123ff71fd31418698651d603ca3711dba105eebc16557b41a08fd62ff54b"
+      "local_sha256": "b4d95faf1b898a01454099186aec0239fca55c867f7a8a136909f8983b043c3f"
     },
     {
       "path": "python/mbsa/backends/optimized/runtime.py",
       "relationship": "locally-authored",
       "license": "Apache-2.0",
-      "local_sha256": "a108851b2fb56287fcbd83f8965132c9c4fed9b1f8f3d42d5fdc6bb2a13e3759"
+      "local_sha256": "51cc579a2ea16df03ccb7c6be9b54c0b6e00aa4f81d375028670924214409611"
     },
     {
       "path": "python/mbsa/backends/optimized/index_base.py",
@@ -508,7 +508,7 @@
       "path": "python/mbsa/backends/optimized/page_map.py",
       "relationship": "locally-authored",
       "license": "Apache-2.0",
-      "local_sha256": "6ffdddbe810c94291820c540a5cd87d8b873bd8160586097329c348f87875eb9"
+      "local_sha256": "b376f004d3fbb5676a2e6ea5e070ddeee92b0b480ad63fa5cfa52ff47df3193f"
     },
     {
       "path": "python/mbsa/backends/optimized/index_policy.py",

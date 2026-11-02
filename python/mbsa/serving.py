@@ -202,7 +202,7 @@ class PrefillStep:
                 queued use.
             index_page_table: CUDA int32 Index page table with one row per request, or compact 1-D
                 active IDs for optimized. Optimized requires adjacent contiguous active rows
-                (16-byte row alignment for unpacked/MX, 4-byte for packed floating Index), and
+                (16-byte base alignment for unpacked/MX, 4-byte for packed floating Index), and
                 rejects automatic splitting of Q>8192.
 
         Returns:
@@ -301,6 +301,7 @@ class PrefillStep:
                 partial_dtype=self._owner.partial_dtype,
                 out=out,
                 backend=self._owner.backend,
+                lean192=self._owner.lean192,
                 **packed,
             )._owner
         return prepare_sm100(
@@ -317,6 +318,7 @@ class PrefillStep:
             check_device_inputs=False,
             fixed_stream=None,
             backend=self._owner.backend,
+            lean192=self._owner.lean192,
             **packed,
         )._owner
 
@@ -327,6 +329,7 @@ class Prefill:
     def __init__(
         self, device: torch.device, *, partial_dtype: torch.dtype | None = None,
         backend: str = "default",
+        lean192: str = "auto",
     ) -> None:
         """Create a serial serving runner for one device and backend.
 
@@ -336,18 +339,30 @@ class Prefill:
                 MBSA_FP8_PARTIAL_OUT (0=BF16, the default; 1=E4M3FN). Final output remains BF16.
             backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
                 (SM100/SM103). Selection is fixed for the plan lifetime.
+            lean192: Immutable auto/on/off policy for the optimized Indexer. Auto
+                preserves existing dispatch; off disables only Lean192. Forced
+                on rejects requests outside its existing dense SM103 BF16 policy;
+                in particular it does not enable Lean192 for paged serving.
 
         Returns:
             None. Device buffers and compilation are deferred until a step first runs.
         """
         from .api import _resolve_partial_dtype, _validate_backend
+        from .backends._index_options import validate_lean192
 
         _validate_backend(backend)
+        validate_lean192(lean192, backend=backend)
         partial_dtype = _resolve_partial_dtype(partial_dtype)
         self.device = torch.device(device)
         self.partial_dtype = partial_dtype
         self.backend = backend
+        self._lean192 = lean192
         self._fixed_stream: torch.cuda.Stream | None = None
+
+    @property
+    def lean192(self) -> str:
+        """Preparation policy fixed when this serial runner is constructed."""
+        return self._lean192
 
     def fixed_stream(self) -> torch.cuda.Stream:
         if self._fixed_stream is None:
@@ -367,11 +382,11 @@ class Prefill:
         return PrefillStep(self, lens, page_table, index_page_table)
 
 
-_RUNNERS: dict[tuple[torch.device, torch.dtype, str], Prefill] = {}
+_RUNNERS: dict[tuple[torch.device, torch.dtype, str, str], Prefill] = {}
 
 
 def runner(device: torch.device, partial_dtype: torch.dtype | None = None, *,
-           backend: str = "default") -> Prefill:
+           backend: str = "default", lean192: str = "auto") -> Prefill:
     """Get the process-cached serial runner for a device, dtype and backend.
 
     Args:
@@ -380,18 +395,23 @@ def runner(device: torch.device, partial_dtype: torch.dtype | None = None, *,
             MBSA_FP8_PARTIAL_OUT (0=BF16, the default; 1=E4M3FN). Final output remains BF16.
         backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
             (SM100/SM103). Selection is fixed for the plan lifetime.
+        lean192: Requested optimized Index policy, also part of the runner cache
+            identity. Non-auto values require backend="optimized".
 
     Returns:
         Shared Prefill instance for the resolved key. Use a separately constructed Prefill when
         independent runner state is needed.
     """
     from .api import _resolve_partial_dtype, _validate_backend
+    from .backends._index_options import validate_lean192
 
     _validate_backend(backend)
+    validate_lean192(lean192, backend=backend)
     partial_dtype = _resolve_partial_dtype(partial_dtype)
-    key = (torch.device(device), partial_dtype, backend)
+    key = (torch.device(device), partial_dtype, backend, lean192)
     if key not in _RUNNERS:
-        _RUNNERS[key] = Prefill(key[0], partial_dtype=partial_dtype, backend=backend)
+        _RUNNERS[key] = Prefill(key[0], partial_dtype=partial_dtype, backend=backend,
+                               lean192=lean192)
     return _RUNNERS[key]
 
 
@@ -546,7 +566,9 @@ def compiled_kernel_count() -> int:
         for name in modules
         if (module := sys.modules.get(f"{__package__}.{name}")) is not None
         for key, value in vars(module).items()
-        if isinstance(value, dict) and (key.endswith("CACHE") or key.endswith("cache"))
+        if isinstance(value, dict) and (
+            key.endswith("CACHE") or key.endswith("cache") or key == "_MERGE_KERNELS"
+        )
     )
 
 

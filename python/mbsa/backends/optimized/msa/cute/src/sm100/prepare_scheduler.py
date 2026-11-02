@@ -9,7 +9,7 @@ by sparse attention kernels. Each work item covers a contiguous q-index range
 within one (head_kv, csr row) and carries the decoded batch/KV-block coordinate.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import cuda.bindings.driver as cuda
@@ -20,12 +20,12 @@ import torch
 from cutlass import Int32, const_expr
 from cutlass.cutlass_dsl import BaseDSL
 
-from mbsa.backends.optimized.msa.cute.src.common import copy_utils, utils
-from mbsa.backends.optimized.msa.cute.src.common.cute_dsl_utils import (
+from ..common import copy_utils, utils
+from ..common.cute_dsl_utils import (
     assume_tensor_aligned,
     to_cute_tensor as to_cute_tensor_kvouter,
 )
-from mbsa.backends.optimized.msa.cute.src.sm100.fwd.config import MSA_OUTPUT_TILE_ROWS
+from .fwd.config import MSA_OUTPUT_TILE_ROWS
 
 
 _PREPARE_COMPILE_CACHE: dict = {}
@@ -44,6 +44,9 @@ class SparseAttentionSchedule:
     tma_partial_locations: Optional[torch.Tensor] = None
     tma_tile_count: Optional[torch.Tensor] = None
     tma_tile_capacity: int = 0
+    # Descriptor metadata belongs to the request schedule, not a global cache.
+    _q_gather4_desc_cache: dict = field(default_factory=dict, init=False, repr=False, compare=False)
+    _ragged_partial_cache: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
     @property
     def work_capacity(self) -> int:
@@ -635,7 +638,7 @@ def _get_sparse_prepare_fwd_split_atomic(
         "sparse_prepare_fwd_split_atomic_sm100_csr_varlen",
     )
     if key not in _PREPARE_COMPILE_CACHE:
-        from mbsa.backends.optimized.msa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from ..common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:
@@ -675,7 +678,7 @@ def _get_sparse_prepare_flat_schedule(
         "sparse_prepare_flat_schedule_sm100_csr_varlen",
     )
     if key not in _PREPARE_COMPILE_CACHE:
-        from mbsa.backends.optimized.msa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from ..common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:
@@ -720,7 +723,7 @@ def _get_sparse_prepare_tma_tile_map(
         ),
     )
     if key not in _PREPARE_COMPILE_CACHE:
-        from mbsa.backends.optimized.msa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from ..common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:

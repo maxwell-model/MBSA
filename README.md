@@ -97,7 +97,44 @@ Preparation and serving accept `backend="default"` and `backend="optimized"`. Th
 
 The optimized Index stage supports BF16, FP16, E4M3 and MX formats. FP8 attention operands are converted to BF16 in owned buffers on each run. BSA writes contiguous `[T,Hq,D]` output and uses static persistent scheduling across KV lengths. Mixed requests use a separate attention-state merge; batch one uses fused initial-state combine. Original source notices, license texts and adaptation records ship under `mbsa/backends/optimized/`.
 
-Optimized Index page maps bind directly to the supplied tensor. Active request rows must form one adjacent contiguous storage span, with 16-byte row alignment for unpacked or MX Index and 4-byte alignment for packed non-MX Index. Preparation and rebind reject gapped, strided or unaligned maps. Pass compact active page IDs for variable-length requests. Optimized serving accepts a 1-D compact Index map and requests with Q <= 8192; split longer requests and their maps before staging to avoid map duplication. In-place map updates are visible during eager execution and CUDA Graph replay.
+### Lean192 ON/OFF comparison
+
+The optimized backend accepts a preparation-only `lean192` policy:
+
+```python
+pipeline = prepare_cutedsl_pipeline(
+    index_q, index_k, q, k, v, backend="optimized", lean192="off",
+)
+print(pipeline.lean192, pipeline.lean192_enabled)  # requested policy, actual selection
+```
+
+- `"auto"` (default) preserves the existing dispatch.
+- `"off"` disables only the 192-thread Indexer, retaining the optimized backend
+  and its regular CuTe Indexer. It does not select the V3 C++ Indexer.
+- `"on"` requires the existing SM103 BF16 specialization: one dense, unpacked
+  request, Q=8192, KV in whole 8192-token increments, implicit identity Index pages,
+  contiguous BF16 attention operands/partials and the PB1024 policy.
+  Unsupported shapes, supplied mutable Index maps, FP8/MX, paged attention and packed requests raise
+  `ValueError`, rather than silently falling back. The selected CuTe compiler
+  target must also support SM103 Lean192; a target override cannot silently
+  turn a forced ON request into the regular Indexer.
+
+`prepare_sm100`, `Prefill` and `serving.runner` accept the same keyword. Paged
+serving normally does not qualify for ON; AUTO reports `False` on an ineligible
+plan. ON/OFF require `backend="optimized"`. A plan's requested policy is fixed
+for its lifetime. Forced ON rejects checked rebind without replacing the old
+binding: create a new dense plan for different operand addresses, or use AUTO/OFF
+when mutable maps/rebinding are required. In-place Q/K/V updates remain live.
+Graph capture does not permit rebinding in any mode. OFF does not disable the
+separate 8K `lean_pipeline` or E4M3 partition policy.
+
+Use `--lean192 auto|on|off` in either prefill benchmark. The output records both
+the requested policy and actual selection for every chunk. Compare ON/OFF in
+the target workload, including neighboring operators: attention latency alone
+does not establish the effect of clock/power history on a model. No universal
+ON/OFF performance recommendation is implied by the switch.
+
+Optimized Index page maps bind directly to the supplied tensor. Active request rows must form one adjacent contiguous storage span, with a 16-byte base alignment for unpacked or MX Index and 4-byte base alignment for packed non-MX Index. Individual compact request rows need not be 16-byte aligned. Preparation and rebind reject gapped or strided maps and an unaligned base. Pass compact active page IDs for variable-length requests. Optimized serving accepts a 1-D compact Index map and requests with Q <= 8192; split longer requests and their maps before staging to avoid map duplication. In-place map updates are visible during eager execution and CUDA Graph replay.
 
 Direct Q/K/V, Index Q and floating Index K, MX Q scales and caller output
 require 16-byte base alignment; MXFP6 Index K requires 128-byte alignment.
@@ -118,6 +155,20 @@ Rejection preserves prior bindings, but cannot undo caller writes into inputs.
 Use `capture_mega_graph()` and `run_mega()` for backend-owned capture and replay.
 Once captured, a plan cannot be rebound. The existing `.plan` inspection and
 execution entry points remain available for compatibility.
+
+Low-level sparse-attention gather4 callers (GQA ratios 1, 2 or 4) must warm
+the same contiguous Q storage and caller-owned schedule before CUDA Graph
+capture. Descriptors belong to that schedule and are keyed by address, layout,
+dtype and tile width; a new binding during capture is rejected before allocation.
+Keep the schedule and operands alive and order their CUDA uses. Different live
+bindings retain separate descriptor metadata until the schedule is released.
+Prepared APIs own their stable buffers; the GQA8 path does not use gather4.
+
+Low-level ragged TMA output also requires warmup before capture. With no supplied
+workspace, its schedule retains private partial buffers for each warmed geometry;
+public output/LSE allocation semantics are unchanged. Caller-supplied workspace
+must stay live and use the same warmed binding. Independent concurrent calls
+require independent schedules/workspace, as with prepared plans.
 
 ### Compatibility and validation boundaries
 
@@ -162,6 +213,7 @@ Run the prefill benchmark on Blackwell:
 
 ```bash
 .venv/bin/python benchmarks/bench_prefill.py \
+  --backend optimized \
   --index-dtype fp8 --lengths 8192,16384,32768,65536,131072,262144 \
   --no-plot --output /tmp/mbsa-prefill.json
 ```
@@ -169,6 +221,22 @@ Run the prefill benchmark on Blackwell:
 The benchmark compares MBSA with dense GQA. Sparse totals sum 8192-token chunk
 medians and exclude preparation, compilation, projections and cache writes;
 sparse and dense attention use different masks.
+
+For direct eager timing of the complete ordered prompt, use:
+
+```bash
+.venv/bin/python benchmarks/bench_true_prefill.py --backend optimized \
+  --scope full --index-dtype fp8 --include-preparation \
+  --lengths 8192,16384,32768,65536,131072,262144,524288,1048576 \
+  --output /tmp/mbsa-true-prefill.json
+```
+
+This uses one enclosing event pair over all real chunks and includes Index Q
+casting and newly appended Index K insertion. Projection, RMSNorm, RoPE and
+attention-cache writes are excluded; attention operands remain BF16. Omit
+`--include-preparation` for prepared inputs, or use `--scope single` for the last
+8K query chunk. Use `--backend default` to select the original backend. See
+[measurement contracts](docs/customer_regressions.md#measuring-prefill).
 
 ## Validation
 

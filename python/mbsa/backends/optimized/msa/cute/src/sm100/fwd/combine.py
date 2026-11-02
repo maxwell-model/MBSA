@@ -24,18 +24,18 @@ from cutlass.cute.nvgpu import cpasync
 from cutlass import Float32, Int32, Int64, Boolean, const_expr
 from cutlass.cutlass_dsl import BaseDSL
 
-from mbsa.backends.optimized.msa.cute.src.common import utils
-from mbsa.backends.optimized.msa.cute.src.common.cute_dsl_utils import assume_tensor_aligned, torch2cute_dtype_map
-from mbsa.backends.optimized.msa.cute.src.common.seqlen_info import SeqlenInfo
+from ...common import utils
+from ...common.cute_dsl_utils import assume_tensor_aligned, torch2cute_dtype_map
+from ...common.seqlen_info import SeqlenInfo
 from cutlass.cute import FastDivmodDivisor
 
-from mbsa.backends.optimized.msa.cute.src.common.pack_gqa import PackGQAComb
-from mbsa.backends.optimized.msa.cute.src.common.tma_utils import (
+from ...common.pack_gqa import PackGQAComb
+from ...common.tma_utils import (
     stg128_fake_col_to_real_col,
     stg128_fp8_fake_col_to_real_col,
     stg128_half_fake_col_to_real_col,
 )
-from mbsa.backends.optimized.msa.cute.src.sm100.fwd.config import MSA_OUTPUT_TILE_ROWS
+from .config import MSA_OUTPUT_TILE_ROWS
 
 
 _tma_tile_combine_compile_cache: dict = {}
@@ -1581,10 +1581,10 @@ class SparseAttentionForwardCombine:
                     tOsO_partial[None, None, None, full.index],
                     tOrO_partial,
                 )
-                # Every CTA thread owns part of this 64x128 tile. Signal
-                # the 256-arrival empty barrier directly after each
-                # thread has finished its register copy; PipelineTmaAsync
-                # normally elects one release thread for a size-1 group.
+                # Complete every thread's generic-proxy SMEM reads before
+                # the empty barrier permits async-proxy TMA stage reuse.
+                cute.arch.fence_view_async_shared()
+                # All 256 threads contribute to this tile's release count.
                 o_tma_pipeline.sync_object_empty.arrive(full.index, None)
             else:
                 cute.arch.cp_async_wait_group(self.stages - 1)
@@ -1918,8 +1918,8 @@ def combine(
         use_pdl: When True, wait on PDL dependencies from the producer K1
             kernel. When False, launch without PDL waits.
         use_tma_partial: Stage full Dynamic partial-O tiles with TMA. This
-            experimental path requires batch-1 varlen input with 16 valid
-            Dynamic splits per row.
+            path requires batch-1 varlen input with 16 partial slots. Per-row
+            split_counts may be smaller; invalid slots must not contribute.
         use_vector_initial: Load adjacent Fixed-state output pairs with one
             aligned 32-bit transaction before exact online-softmax merging.
     """
@@ -2064,7 +2064,7 @@ def combine(
         bool(use_vector_initial),
     )
     if key not in _combine_compile_cache:
-        from mbsa.backends.optimized.msa.cute.src.common.aot_cache import try_load_aot, save_aot
+        from ...common.aot_cache import try_load_aot, save_aot
 
         loaded = try_load_aot(key)
         if loaded is not None:

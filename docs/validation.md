@@ -77,9 +77,9 @@ ordering, which can differ when scaling rounds close scores into a tie.
 
 ## Performance
 
-The README benchmark sums separately measured chunk medians and excludes
-preparation/cache writes; it is not a direct true-full-prefill chain timer.
-For a full-prompt claim, enclose all ordered legal-visible-cache iterations
-in one CUDA-event scope. Include adapter, conversion and metadata work in
+The historical `bench_prefill.py` summary sums separately measured chunk medians
+and excludes preparation/cache writes; it is not a direct true-full-prefill timer.
+`bench_true_prefill.py --scope full` instead encloses all ordered legal-visible-cache
+iterations in one CUDA-event scope. Include adapter, conversion and metadata work in
 the declared lifetime; do not sum component medians or mix GPU models/SM counts.
 No new whole-matrix or model-quality result is asserted by this document.

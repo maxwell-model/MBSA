@@ -2609,6 +2609,11 @@ class FlashAttentionForwardSm100:
                 )
                 final_scale0 = scale0 * inv_sum
                 final_scale1 = scale1 * inv_sum
+                # An empty stage contributes zero; a legally consumed NaN is
+                # not empty and must not be converted into a zero output.
+                if sum_combined != sum_combined:
+                    final_scale0 = sum_combined
+                    final_scale1 = sum_combined
 
                 # Wait for both O accumulators from MMA warp
                 for stage in cutlass.range_constexpr(self.s_stage):
@@ -2652,8 +2657,9 @@ class FlashAttentionForwardSm100:
                     pipeline_sm_stats.consumer_release_w_index(stage_idx)
                 sm_stats_consumer_phase ^= 1
                 # Write O=0 via correction_epilogue_combine with scale=0.
-                # Note: reads tmem which may have values from a previous tile;
-                # 0.0 * finite = 0.0. For the very first tile, tmem is hardware-zero-initialized.
+                # The collective reads still participate uniformly. With both
+                # scales zero, their values are discarded and O is filled with
+                # zero, without relying on any prior TMEM initialization.
                 if const_expr(not self.use_correction_warps_for_epi):
                     pipeline_o_epi.producer_acquire_w_index_phase(
                         0, corr_epi_producer_phase
@@ -2720,6 +2726,8 @@ class FlashAttentionForwardSm100:
                     if not comb_zero_or_nan
                     else -Float32.inf
                 )
+                if sum_comb != sum_comb:
+                    lse = sum_comb
                 seqlen_q = (
                     seqlen.seqlen_q
                     if const_expr(not self.pack_gqa)
@@ -2955,11 +2963,12 @@ class FlashAttentionForwardSm100:
             frg_shape = tOcO_t2r[None, 0, 0, i].shape
             tOrO0_frg = cute.make_rmem_tensor(frg_shape, self.pv_acc_dtype)
             tOrO1_frg = cute.make_rmem_tensor(frg_shape, self.pv_acc_dtype)
-            # When both scales are 0 (empty tile), skip tmem reads to avoid 0*NaN=NaN.
+            # TMEM loads are warp collectives, even when row scales differ.
+            cute.copy(tiled_tmem_load, tOtO0_t2r_i, tOrO0_frg)
+            cute.copy(tiled_tmem_load, tOtO1_t2r_i, tOrO1_frg)
+            # Suppress only arithmetic on empty rows: 0*stale NaN is not zero.
             is_zero_output = scale0 == Float32(0.0) and scale1 == Float32(0.0)
             if not is_zero_output:
-                cute.copy(tiled_tmem_load, tOtO0_t2r_i, tOrO0_frg)
-                cute.copy(tiled_tmem_load, tOtO1_t2r_i, tOrO1_frg)
                 # Combined: O = O0 * scale0 + O1 * scale1
                 for j in cutlass.range(0, cute.size(tOrO0_frg), 2, unroll_full=True):
                     o0_a, o0_b = cute.arch.mul_packed_f32x2(
