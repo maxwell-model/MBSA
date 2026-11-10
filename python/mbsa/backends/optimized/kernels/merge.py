@@ -34,7 +34,9 @@ HEADS_PER_KV = 8
 D = 128
 
 
-_MERGE_KERNELS: dict[tuple[torch.dtype, int | None, int, bool], object] = {}
+# Keyed by dtypes, device and layout only: the row count is a dynamic shape,
+# so mixed batches with new total query counts reuse one compiled kernel.
+_MERGE_KERNELS: dict[tuple[torch.dtype, torch.dtype, torch.dtype, int | None, bool], object] = {}
 
 
 class _MergeTwoAttentionStates:
@@ -125,33 +127,48 @@ def _merge_two_attention_states_cutedsl(
     out_lse: torch.Tensor,
     *,
     fixed_grouped: bool = False,
-) -> None:
+    inputs: tuple | None = None,
+) -> tuple:
+    """Merge Fixed and Dynamic attention states into out / out_lse on the current stream.
+
+    inputs: wrappers of (fixed_o, fixed_lse, dynamic_o, dynamic_lse, out_lse) returned by an earlier call with
+    the same tensors; a plan's layers share them, so only out is wrapped again. Returns those wrappers.
+    """
     rows = fixed_o.numel() // D
-    if fixed_grouped and tuple(fixed_o.shape) != (H_KV, rows // H_Q, HEADS_PER_KV, D):
-        raise ValueError("grouped fixed O must be [Hkv,Q,GQA,D]")
-    tensors = (fixed_o, dynamic_o, out)
-    if any(t.numel() != rows * D or not t.is_contiguous() for t in tensors):
+    if out.numel() != rows * D or not out.is_contiguous():
         raise ValueError("attention outputs must be contiguous [rows,128] tensors")
-    if any(
-        t.numel() != rows or not t.is_contiguous()
-        for t in (fixed_lse, dynamic_lse, out_lse)
-    ):
-        raise ValueError("LSE inputs must be contiguous and match the output rows")
-    cute_args = (
-        from_dlpack(
-            fixed_o.detach() if fixed_grouped else fixed_o.detach().reshape(rows, D),
-            assumed_align=16,
-        ),
-        from_dlpack(fixed_lse.detach().reshape(rows), assumed_align=16),
-        from_dlpack(dynamic_o.detach().reshape(rows, D), assumed_align=16),
-        from_dlpack(dynamic_lse.detach().reshape(rows), assumed_align=16),
-        from_dlpack(out.detach().reshape(rows, D), assumed_align=16),
-        from_dlpack(out_lse.detach().reshape(rows), assumed_align=16),
-    )
+
+    def dynamic(tensor, mode=0):
+        # Contiguous (checked): the row-major stride order.
+        return from_dlpack(tensor, assumed_align=16).mark_compact_shape_dynamic(
+            mode=mode, stride_order=tuple(range(tensor.dim()))
+        )
+
+    if inputs is None:
+        if fixed_grouped and tuple(fixed_o.shape) != (H_KV, rows // H_Q, HEADS_PER_KV, D):
+            raise ValueError("grouped fixed O must be [Hkv,Q,GQA,D]")
+        if any(t.numel() != rows * D or not t.is_contiguous() for t in (fixed_o, dynamic_o)):
+            raise ValueError("attention outputs must be contiguous [rows,128] tensors")
+        if any(
+            t.numel() != rows or not t.is_contiguous()
+            for t in (fixed_lse, dynamic_lse, out_lse)
+        ):
+            raise ValueError("LSE inputs must be contiguous and match the output rows")
+        inputs = (
+            dynamic(fixed_o.detach(), 1)
+            if fixed_grouped
+            else dynamic(fixed_o.detach().reshape(rows, D)),
+            dynamic(fixed_lse.detach().reshape(rows)),
+            dynamic(dynamic_o.detach().reshape(rows, D)),
+            dynamic(dynamic_lse.detach().reshape(rows)),
+            dynamic(out_lse.detach().reshape(rows)),
+        )
+    cute_args = (*inputs[:4], dynamic(out.detach().reshape(rows, D)), inputs[4])
     stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
-    key = (out.dtype, out.device.index, rows, fixed_grouped)
+    key = (fixed_o.dtype, dynamic_o.dtype, out.dtype, out.device.index, fixed_grouped)
     compiled = _MERGE_KERNELS.get(key)
     if compiled is None:
         compiled = cute.compile(_MergeTwoAttentionStates(), *cute_args, stream)
         _MERGE_KERNELS[key] = compiled
     compiled(*cute_args, stream)
+    return inputs

@@ -279,9 +279,10 @@ def prepare_cutedsl_pipeline(
             inputs. None allocates plan-owned output; supplied storage stays caller-owned.
         backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
             (SM100/SM103). Selection is fixed for the plan lifetime.
-        lean192: Optimized Index policy: "auto" preserves existing dispatch, "off"
-            disables only Lean192, and "on" requires its existing eligible SM103
-            BF16 dense single-request Q8192 geometry. Unsupported forced ON raises
+        lean192: Optimized Index policy: "auto" leaves the choice to the Index dispatch (on SM103
+            the 2-SM Index kernel replaces Lean192 above 12K KV tokens), "off" disables only
+            Lean192, and "on" requires its existing eligible SM103 BF16 dense single-request Q8192
+            geometry. Unsupported forced ON raises
             ValueError; it never falls back silently. Fixed for the plan lifetime.
             Non-auto values require backend="optimized". Inspect lean192_enabled
             on the returned pipeline for the actual resolved specialization.
@@ -432,8 +433,8 @@ def prepare_sm100(
             None lets preparation create/select a stream when overlap is enabled.
         backend: Implementation selector: "default" or "optimized", both on SM100/SM103.
             Selection is fixed for the plan lifetime.
-        lean192: Preparation-only "auto"/"on"/"off" Index policy. Auto preserves
-            existing dispatch; off changes only the optimized Lean192 selection.
+        lean192: Preparation-only "auto"/"on"/"off" Index policy. Auto leaves the choice
+            to the Index dispatch; off changes only the optimized Lean192 selection.
             On requires the existing eligible SM103 BF16 dense B1/Q8192 policy
             and raises instead of falling back. Non-auto requires optimized.
             The returned lean192_enabled reports the actual bound specialization.

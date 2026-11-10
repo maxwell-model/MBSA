@@ -33,6 +33,18 @@ def _metadata(tensor):
     return tensor.shape, tensor.stride(), tensor.dtype, tensor.device
 
 
+_OWNED_FIELDS: dict[type, tuple[str, ...]] = {}
+
+
+def _owned_fields(cls):
+    """Dataclass fields that may own tensors; host-only fields (metadata ownership=False) hold no tensor that
+    other fields do not hold."""
+    names = _OWNED_FIELDS.get(cls)
+    if names is None:
+        names = _OWNED_FIELDS[cls] = tuple(f.name for f in fields(cls) if f.metadata.get("ownership", True))
+    return names
+
+
 def _backing_tensors(*roots):
     """Snapshot the prepared tensor ownership graph without merging aliases."""
     pending, seen, tensors = list(roots), set(), []
@@ -48,7 +60,7 @@ def _backing_tensors(*roots):
         elif isinstance(value, (tuple, list)):
             pending.extend(value)
         elif is_dataclass(value) and not isinstance(value, type):
-            pending.extend(getattr(value, f.name) for f in fields(value))
+            pending.extend(getattr(value, name) for name in _owned_fields(type(value)))
     return tuple(tensors)
 
 
@@ -184,8 +196,12 @@ class _State:
             tensor.record_stream(stream)
 
     def _refresh(self):
-        for destination, source in self.conversions:
-            destination.copy_(source)
+        for conversion in self.conversions:
+            if isinstance(conversion, tuple):
+                destination, source = conversion
+                destination.copy_(source)
+            else:
+                conversion.refresh()
 
     def run_plan(self):
         a, p = self.attention, self.index
@@ -362,8 +378,8 @@ class PreparedOwner(PreparedOwnerBase):
                 uses packed uint8 [pages,1,128,100] with page-separated codes/scales. Physical
                 pages contain 128 tokens.
             q: CUDA attention queries [T,32,128]. BF16 for BF16 K/V; the default Blackwell FP8 path
-                also accepts BF16 or E4M3FN Q with E4M3FN K/V. Optimized converts FP8 operands to
-                owned BF16 buffers per run.
+                also accepts BF16 or E4M3FN Q with E4M3FN K/V. Optimized converts FP8 Q and, for paged
+                K/V, only the logical pages of the prepared requests to owned BF16 buffers per run.
             k: CUDA attention keys [Skv,4,128] or paged [pages,4,128,128]. Must match v in
                 dtype/layout/device; BF16, or E4M3FN on Blackwell with unit scales.
             v: CUDA attention values with the same shape, dtype and device as k. Read-only until
@@ -410,8 +426,10 @@ class PreparedOwner(PreparedOwnerBase):
         rows = _validate_inputs(index_q, index_k, q, k, v, index_q_scales,
                                index_page_indices, page_table, out, old.lens, check_pages)
         # Stage host bindings only: serving layer reuse keeps all prepared
-        # workspaces, schedules and compile identities. No kernel/copy runs
-        # before publication, and rejected staging preserves old bindings.
+        # workspaces, schedules and compile identities. No kernel runs before
+        # publication; only a changed Index dispatch choice stages new partition
+        # buffers (host-to-device copies on the current stream). Rejected
+        # staging preserves old bindings.
         staged = copy.copy(old)
         a = staged.attention = copy.copy(old.attention)
         a.tile_plan = copy.copy(old.attention.tile_plan)
@@ -420,14 +438,18 @@ class PreparedOwner(PreparedOwnerBase):
         staged.bindings = replacements
         staged.page_views = rows
         staged.options = dict(old.options, **replacements)
-        staged.conversions = tuple((destination, next(
-            (replacements[name] for name, previous in old.bindings.items()
-             if source is previous), source)) for destination, source in old.conversions)
+        staged.conversions = tuple(
+            (conversion[0], next((replacements[name] for name, previous in old.bindings.items()
+                                  if conversion[1] is previous), conversion[1]))
+            if isinstance(conversion, tuple) else conversion.rebind(k, v, page_table)
+            for conversion in old.conversions)
         for name in ('q', 'k', 'v'):
             previous = old.bindings[name]
             operand = getattr(old.attention, name)
             setattr(a, name, replacements[name] if operand is previous else operand)
-        a.tile_plan.page_table = page_table if page_table is not None else old.attention.tile_plan.page_table
+        if all(isinstance(conversion, tuple) for conversion in old.conversions):
+            # A compact FP8 page copy keeps its static table; refresh reads page_table.
+            a.tile_plan.page_table = page_table if page_table is not None else old.attention.tile_plan.page_table
         a.out = out
         if old.attention.dynamic_out is old.attention.out:
             a.dynamic_out = out
@@ -472,8 +494,8 @@ class PreparedOwner(PreparedOwnerBase):
                 uses packed uint8 [pages,1,128,100] with page-separated codes/scales. Physical
                 pages contain 128 tokens.
             q: CUDA attention queries [T,32,128]. BF16 for BF16 K/V; the default Blackwell FP8 path
-                also accepts BF16 or E4M3FN Q with E4M3FN K/V. Optimized converts FP8 operands to
-                owned BF16 buffers per run.
+                also accepts BF16 or E4M3FN Q with E4M3FN K/V. Optimized converts FP8 Q and, for paged
+                K/V, only the logical pages of the prepared requests to owned BF16 buffers per run.
             k: CUDA attention keys [Skv,4,128] or paged [pages,4,128,128]. Must match v in
                 dtype/layout/device; BF16, or E4M3FN on Blackwell with unit scales.
             v: CUDA attention values with the same shape, dtype and device as k. Read-only until
@@ -546,7 +568,12 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
                     page_table=page_table, out=out)
     conversions = []
     compute = []
-    for operand in (q, k, v):
+    # Paged FP8 K/V: convert only the logical pages of this step's requests,
+    # not the whole physical cache (see kernels/kv_pages.py). Requests sharing
+    # pages can own more logical pages than the cache holds; then the whole
+    # cache is converted, which is never larger.
+    paged_fp8 = k.ndim == 4 and k.dtype == torch.float8_e4m3fn and sum(counts) < k.shape[0]
+    for operand in (q,) if paged_fp8 else (q, k, v):
         if operand.dtype == torch.bfloat16:
             compute.append(operand)
         else:
@@ -554,6 +581,11 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
             destination.copy_(operand)
             conversions.append((destination, operand))
             compute.append(destination)
+    if paged_fp8:
+        from .kernels.kv_pages import PagedKVConversion
+        paged = PagedKVConversion.prepare(k, v, page_table, counts)
+        conversions.append(paged)
+        compute += [paged.k, paged.v]
     # Pad only the physical Index tail, preserving the public logical tensor.
     effective_index_k = index_k
     if index_k.ndim == 3 and index_k.shape[0] % 128:
@@ -570,7 +602,8 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         if tuple(cu_seqlens_q.tolist()) != tuple(accumulate(q_lens, initial=0)) or tuple(cu_seqlens_k.tolist()) != tuple(accumulate(kv_lens, initial=0)):
             raise ValueError("device prefix sums disagree with request_lens")
     policy = PrefillPolicy.ALIGNED_PAGED if k.ndim == 4 else PrefillPolicy.ALIGNED_CONTIGUOUS
-    table = page_table if page_table is not None else torch.empty((len(lens), 0), dtype=torch.int32, device=q.device)
+    table = (paged.table if paged_fp8 else page_table if page_table is not None
+             else torch.empty((len(lens), 0), dtype=torch.int32, device=q.device))
     tile_plan = FwdTilePlan(
         dynamic_route=torch.full((4, q.shape[0], 16), -1, dtype=torch.int32, device=q.device),
         page_table=table, valid_kv_tokens=valid,
@@ -599,7 +632,8 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         prefix_lens=offsets, attention=attention, q_lens=q_lens, kv_lens=kv_lens,
         index_pages_identity=not pages_supplied and len(lens)==1,
         check_device_inputs=check_device_inputs, original_q=q, original_k=k,
-        original_v=v, contiguous_unpacked=unpacked and k.ndim==3, lean192=lean192)
+        original_v=v, contiguous_unpacked=unpacked and k.ndim==3, lean192=lean192,
+        overlap_fixed_score=bool(overlap_fixed_score) and not attention.fixed_only)
     if not overlap_fixed_score or attention.fixed_only:
         fixed_stream = None
     elif fixed_stream is None:

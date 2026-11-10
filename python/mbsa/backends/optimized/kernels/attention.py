@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -114,6 +114,9 @@ class UnifiedAlignedPrefillPlan:
     # Benchmark-only override. Production leaves this unset and uses the MSA
     # selector so dispatch policy stays separate from kernel mechanics.
     dynamic_kernel_cfg: Any = None
+    # (merge input tensors, their wrappers): rebinding a serving layer keeps these plan-owned tensors. Host-only:
+    # the ownership walk skips it, as the tensors are also held by the fields above.
+    _merge_inputs: tuple | None = field(default=None, repr=False, metadata={"ownership": False})
 
     @property
     def fixed_only(self) -> bool:
@@ -348,7 +351,9 @@ class UnifiedAlignedPrefillPlan:
             return self.out, self.out_lse
         if self.fuse_fixed_state_in_dynamic_combine:
             return self.out, self.out_lse
-        _merge_two_attention_states_cutedsl(
+        sources = (self.fixed_out, self.fixed_lse, self.dynamic_out, self.dynamic_workspace[2], self.out_lse)
+        cached = self._merge_inputs
+        self._merge_inputs = (sources, _merge_two_attention_states_cutedsl(
             self.fixed_out,
             self.fixed_lse,
             self.dynamic_out,
@@ -356,7 +361,8 @@ class UnifiedAlignedPrefillPlan:
             self.out,
             self.out_lse,
             fixed_grouped=self.fixed_output_layout is BsaOutputLayout.NON_SCATTERED,
-        )
+            inputs=cached[1] if cached is not None and all(a is b for a, b in zip(cached[0], sources)) else None,
+        ))
         return self.out, self.out_lse
 
     def run(self) -> tuple[torch.Tensor, torch.Tensor]:

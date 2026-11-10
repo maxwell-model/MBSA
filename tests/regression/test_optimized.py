@@ -9,7 +9,7 @@ from unittest import mock
 import torch
 
 from mbsa import prepare_cutedsl_pipeline
-from tests.common import BackendCaseMixin
+from tests.common import BackendCaseMixin, baseline_index_dispatch
 from tests.regression import test_backends as backend_support
 from tests.reference import reference_pipeline
 
@@ -441,8 +441,10 @@ class OptimizedBackend(BackendCaseMixin, unittest.TestCase):
 
     def test_public_single_partition_boundary_reference_and_live_graph(self):
         operands = self.inputs(17, 131072)
-        plan = prepare_cutedsl_pipeline(*operands, backend='optimized',
-                                       partial_dtype=torch.bfloat16)
+        # The baseline binding; the Index dispatch extends the router key.
+        with baseline_index_dispatch():
+            plan = prepare_cutedsl_pipeline(*operands, backend='optimized',
+                                           partial_dtype=torch.bfloat16)
         index = plan.plan._state.index
         self.assertEqual(index.candidate_partition_blocks, 1024)
         self.assertIs(plan.plan.attention.fixed_tmem_load_reduce, False)
@@ -488,8 +490,9 @@ class OptimizedBackend(BackendCaseMixin, unittest.TestCase):
         index = plan.plan._state.index
         self.assertEqual(index.candidate_partition_blocks, 2048)
         self.assertIs(plan.plan.attention.fixed_tmem_load_reduce, True)
-        self.assertEqual(index._local_top16_key[-2:], ('fuse_single_partition_compact', True))
-        self.assertEqual(index._local_top16_key[index._local_top16_key.index('query_tile') + 1], 256)
+        key = index._local_top16_key
+        self.assertIn(('fuse_single_partition_compact', True), tuple(zip(key, key[1:])))
+        self.assertEqual(key[key.index('query_tile') + 1], 256)
 
         def check(observed):
             for row in (0, 127, 4096, 8191):
@@ -1277,9 +1280,14 @@ class OptimizedBackend(BackendCaseMixin, unittest.TestCase):
                              {t.untyped_storage()._cdata for t in state.backing_tensors})
             self.assertEqual(len({id(t) for t in state.backing_tensors}),
                              len(state.backing_tensors))
-            for destination, source in state.conversions:
-                self.assertTrue(any(t is source for t in state.backing_tensors))
-                self.assertTrue(any(t is destination for t in state.backing_tensors))
+            for conversion in state.conversions:
+                # Paged FP8 K/V converts the step's pages through a compact copy and table.
+                pairs = (conversion,) if isinstance(conversion, tuple) else (
+                    (conversion.k, conversion.source_k), (conversion.v, conversion.source_v),
+                    (conversion.table, conversion.source_table))
+                for destination, source in pairs:
+                    self.assertTrue(any(t is source for t in state.backing_tensors))
+                    self.assertTrue(any(t is destination for t in state.backing_tensors))
 
         check_backings(plan)
         self.compare(plan.run(), expected[0])

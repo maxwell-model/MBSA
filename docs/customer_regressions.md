@@ -69,3 +69,39 @@ backend remains inside the timed run.
 
 Clock, power and temperature telemetry should accompany sustained measurements.
 A lower observed clock alone does not identify a power or thermal limit.
+
+## Second follow-up (regression report on 0b79506)
+
+The six fixes above stay covered by `tests.regression.test_customer_review`.
+The remaining items from the regression report:
+
+- **Optimized FP8 K/V.** A paged FP8 cache is no longer converted as a whole
+  each run. The optimized backend gathers the logical pages of the step's
+  requests into a compact BF16 copy with a static compact page table
+  (`kernels/kv_pages.py`). FP8 E4M3FN to BF16 is exact, so attention inputs
+  and outputs are unchanged. Time and memory follow the step's KV length, not
+  the physical cache size. If requests share pages and own at least as many
+  logical pages as the cache holds, each run converts the whole cache instead.
+  `serving.warmup(..., kv_dtype=torch.float8_e4m3fn)` compiles the page
+  conversion. Attention itself still computes in BF16.
+- **Merge compilation (#7).** The mixed-request merge kernel uses a dynamic row
+  count; its compile key holds dtypes, device and layout only. New total query
+  counts reuse the warmed kernel.
+- **Q > 8192 on optimized.** Serving splits long requests into pieces for both
+  backends. The optimized Index map of the pieces is gathered into a compact
+  1-D map once per step.
+- **Workspace.** `Limits.workspace_bytes(backend=..., kv_dtype=...)` bounds the
+  optimized backend's step allocations, including the compact FP8 pages.
+- **Index dispatch and warmup.** On SM103 the optimized Index binds the variant
+  measured fastest per launch (README, "Optimized Index dispatch"). Its kernels
+  take the KV partition count at run time, and the first `serving.warmup` call
+  compiles all of them, so steps after warmup compile no Index kernel, as for
+  the merge in #7.
+- **Default backend with FP8 K/V (not changed).** The report's gap is in the
+  default backend's FP8 attention kernels; this follow-up does not change them.
+  For an FP8 K/V cache, use the optimized backend: it converts the step's pages
+  and runs the BF16 attention kernels.
+
+```bash
+python -m unittest -v tests.regression.test_serving_followup tests.regression.test_index_dispatch
+```

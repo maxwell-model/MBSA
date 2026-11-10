@@ -73,9 +73,11 @@ class DirectPageMapTest(unittest.TestCase):
         owner = SimpleNamespace(backend="optimized")
         step = PrefillStep(owner, ((17, 4113), (23, 2195)), table, pages)
         self.assertIs(step._index_page_table, pages)
+        # Q > 8192 is split into pieces; the pieces' map is gathered when the step is prepared.
         for index_map in (pages, pages.view(1, -1)):
-            with self.assertRaisesRegex(ValueError, "split requests and maps"):
-                PrefillStep(owner, ((8193, 16384),), table, index_map)
+            split = PrefillStep(owner, ((8193, 16384),), table, index_map)
+            self.assertEqual(split.pieces, ((8192, 16383), (1, 16384)))
+            self.assertEqual(split._index_page_table.data_ptr(), index_map.data_ptr())
 
     def test_fixed_only_has_no_index_operand(self):
         plan = SimpleNamespace(cutedsl_index_pages=None, cutedsl_packed_pages=None)

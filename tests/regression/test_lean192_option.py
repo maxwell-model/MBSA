@@ -11,7 +11,7 @@ import torch
 
 from mbsa import prepare_cutedsl_pipeline
 from mbsa.api import prepare_sm100
-from tests.common import BackendCaseMixin
+from tests.common import BackendCaseMixin, baseline_index_dispatch
 from tests.reference import reference_pipeline
 
 
@@ -83,8 +83,10 @@ class Lean192Execution(BackendCaseMixin, unittest.TestCase):
         inputs = self.inputs(8192, 32768)
         snapshots = tuple(t.clone() for t in inputs)
         for prepare in (prepare_cutedsl_pipeline, prepare_sm100):
-            plans = {mode: prepare(*inputs, backend='optimized', lean192=mode)
-                     for mode in ('auto', 'on', 'off')}
+            # AUTO's baseline binding; the Index dispatch may select another kernel.
+            with baseline_index_dispatch():
+                plans = {mode: prepare(*inputs, backend='optimized', lean192=mode)
+                         for mode in ('auto', 'on', 'off')}
             values = {}
             for mode, plan in plans.items():
                 self.assertEqual(plan.lean192, mode)

@@ -225,9 +225,10 @@ class CustomerReviewRegression(unittest.TestCase):
             warmup(prefill, lengths, index_format='bf16')
             torch.cuda.synchronize()
             self.assertTrue(_MERGE_KERNELS)
-            self.assertTrue(any(key[2] == 33 * 32 for key in _MERGE_KERNELS))
             before = dict(_MERGE_KERNELS)
             warmup(prefill, lengths, index_format='bf16')
+            # Row counts are dynamic: another mixed batch size reuses the warmed kernel.
+            warmup(prefill, ((16, 4113), (18, 4113)), index_format='bf16')
             torch.cuda.synchronize()
             self.assertEqual(before.keys(), _MERGE_KERNELS.keys())
             for key, entry in before.items():

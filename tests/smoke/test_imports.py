@@ -36,7 +36,8 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[name] = module
 spec.loader.exec_module(module)
 for suffix in ('.backends.optimized.runtime', '.backends.optimized.kernels.attention',
-               '.backends.optimized.msa.cute.interface'):
+               '.backends.optimized.msa.cute.interface', '.backends.optimized.kernels.kv_pages',
+               '.backends.optimized.kernels.merge'):
     imported = importlib.import_module(name + suffix)
     assert imported.__name__.startswith(name + '.')
 assert 'mbsa' not in sys.modules

@@ -40,8 +40,19 @@ architecture or on the current checkout:
 python -m unittest -v \
   tests.regression.test_optimized \
   tests.regression.test_backends \
-  tests.regression.test_fixed_fa4
+  tests.regression.test_fixed_fa4 \
+  tests.regression.test_customer_review \
+  tests.regression.test_serving_followup
 ```
+
+The optimized Index dispatch (README) has its own modules: `test_index_dispatch`,
+`test_two_sm`, `test_skip_fixed_blocks`, `test_fine_partitions`,
+`test_packed_partitions`, `test_fp8_policy`, `test_parallel_insert`,
+`test_queued_insert` and `test_fp8_two_sm` under `tests/regression`. Each
+variant module binds its kernel through `tests.common.index_dispatch` and
+compares it with the baseline selection bit for bit. On SM103 the rest of the
+suite runs with the default dispatch; `MBSA_INDEX_DISPATCH=baseline` runs it with
+the baseline selection.
 
 Report PASS, FAIL and SKIP separately with their reasons. Do not call a
 module qualified because unsupported or dependency-missing cases were skipped.

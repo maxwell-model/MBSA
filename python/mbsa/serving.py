@@ -127,8 +127,26 @@ class Limits:
         partial_dtype: torch.dtype,
         index_format: str,
         capability: tuple[int, int] | None = None,
+        backend: str = "default",
+        kv_dtype: torch.dtype = torch.bfloat16,
     ) -> int:
-        """Upper bound of the device memory one step allocates."""
+        """Upper bound of the device memory one step allocates.
+
+        Args:
+            partial_dtype: Dynamic partial-output dtype, BF16 or E4M3FN.
+            index_format: Index cache format: bf16, fp16, fp8 or mxfp6.
+            capability: Optional GPU compute capability; None reads the current device.
+            backend: "default" or "optimized"; selects the backend's private buffers.
+            kv_dtype: Attention K/V cache dtype. With E4M3FN the optimized backend
+                converts Q and the step's logical K/V pages to BF16.
+
+        Returns:
+            Bytes to reserve for one prepared step, including all of its layers.
+        """
+        from .api import _validate_backend
+        _validate_backend(backend)
+        if kv_dtype not in (torch.bfloat16, torch.float8_e4m3fn):
+            raise ValueError("kv_dtype must be BF16 or FP8 E4M3FN")
         tokens = self.max_tokens
         max_kv = min(self.max_kv_tokens, MAX_KV_PER_REQUEST)
         pages = _ceil_div(max_kv, PAGE_SIZE)
@@ -171,7 +189,7 @@ class Limits:
             + 3 * 4 * 6 * 4
         )
         per_row = KV_HEADS * 4 * 2 + 2 * 4 + 3 * 4 + 3 * 4 * 6 * 4
-        return (
+        total = (
             tokens * per_token
             + rows * per_row
             + slots * KV_HEADS * 24
@@ -179,6 +197,36 @@ class Limits:
             + (tokens + requests * 2304) * KV_HEADS * HEAD_DIM * 4
             + (64 << 20)
         )
+        if backend == "optimized":
+            total += _optimized_extra_bytes(self, tokens, rows, partitions, kv_dtype)
+        return total
+
+
+def _optimized_extra_bytes(limits: Limits, tokens: int, rows: int, partitions: int,
+                           kv_dtype: torch.dtype) -> int:
+    """Optimized-backend buffers beyond the default estimate.
+
+    ``rows`` bounds the step's logical KV pages, pieces included."""
+    from .backends.optimized.index_policy import FINE_PARTITION_MAX_PARTITIONS
+
+    extra = (
+        # Index partition scores and IDs beyond the prepared count (finer dispatch widths, MX routers).
+        2 * KV_HEADS * max(0, FINE_PARTITION_MAX_PARTITIONS - partitions) * DYNAMIC_PAGES * 4 * tokens
+        # Index candidate storage and Dynamic routes.
+        + tokens * (KV_HEADS * Q_HEADS * 4 + KV_HEADS * DYNAMIC_PAGES * 4)
+        # CSR histogram scratch: at most 4 warps per 128-query CTA group.
+        + 4 * KV_HEADS * 4 * _ceil_div(tokens, 128) * rows
+    )
+    if kv_dtype == torch.float8_e4m3fn:
+        # BF16 copies of FP8 Q and of every piece's logical K/V pages. A request with
+        # q queries adds ceil(q/8192)-1 pieces, at most (tokens-1)//8192 in a step.
+        pieces = (tokens - 1) // MAX_Q_PER_REQUEST
+        max_kv = min(limits.max_kv_tokens, MAX_KV_PER_REQUEST)
+        pages = (_ceil_div(limits.max_total_kv_tokens + pieces * max_kv, PAGE_SIZE)
+                 + limits.max_requests + pieces)
+        extra += tokens * Q_HEADS * HEAD_DIM * 2
+        extra += pages * 2 * KV_HEADS * PAGE_SIZE * HEAD_DIM * 2
+    return extra
 
 
 class PrefillStep:
@@ -202,8 +250,9 @@ class PrefillStep:
                 queued use.
             index_page_table: CUDA int32 Index page table with one row per request, or compact 1-D
                 active IDs for optimized. Optimized requires adjacent contiguous active rows
-                (16-byte base alignment for unpacked/MX, 4-byte for packed floating Index), and
-                rejects automatic splitting of Q>8192.
+                (16-byte base alignment for unpacked/MX, 4-byte for packed floating Index).
+                Requests with Q>8192 are split into pieces; their map rows are copied once per
+                step when the step is prepared, as for the default backend.
 
         Returns:
             None. Page-table views share caller storage; layer operands are bound on run().
@@ -213,8 +262,6 @@ class PrefillStep:
         self.total_q = sum(q_len for q_len, _ in request_lens)
         self.pieces, self._rows = split_requests(request_lens)
         self._page_table = page_table[: len(request_lens)]
-        if owner.backend == "optimized" and len(self.pieces) != len(request_lens):
-            raise ValueError("direct Index maps require requests with Q <= 8192; split requests and maps before staging")
         if owner.backend == "optimized" and index_page_table.ndim == 1:
             self._index_page_table = index_page_table
         else:
@@ -278,7 +325,12 @@ class PrefillStep:
             # Pieces of one request share its page-table rows.
             (rows,) = stage_int32(q.device, (self._rows, (batch,)))
             page_table = page_table.index_select(0, rows)
-            index_page_table = index_page_table.index_select(0, rows)
+            if self._owner.backend == "optimized":
+                # Optimized binds adjacent active rows: gather a compact map.
+                index_page_table = _piece_active_pages(
+                    index_page_table, self.request_lens, lens, self._rows, stage_int32)
+            else:
+                index_page_table = index_page_table.index_select(0, rows)
         packed = {}
         if batch == 1:
             packed["logical_k_tokens"] = lens[0][1]
@@ -323,6 +375,33 @@ class PrefillStep:
         )._owner
 
 
+def _piece_active_pages(pages, request_lens, pieces, piece_rows, stage_int32):
+    """Gather a compact 1-D active Index map for split requests.
+
+    Request ``r`` owns one contiguous span of ``pages``: a 2-D row, exact 1-D
+    active IDs, or a flattened padded row. A piece reads the first pages of its
+    request's span.
+    """
+    counts = [_ceil_div(kv_len, PAGE_SIZE) for _, kv_len in request_lens]
+    if pages.ndim == 2:
+        width = pages.shape[1]
+        if width < max(counts):
+            raise ValueError("index_page_table rows must cover every request's pages")
+        pages = pages.contiguous().view(-1)
+        starts = [row * width for row in range(len(counts))]
+    elif pages.numel() == sum(counts):
+        starts = [0, *accumulate(counts)][:-1]
+    elif pages.numel() % len(counts) == 0 and pages.numel() // len(counts) >= max(counts):
+        width = pages.numel() // len(counts)
+        starts = [row * width for row in range(len(counts))]
+    else:
+        raise ValueError("index_page_table must contain active pages or padded rows")
+    positions = [starts[row] + page for row, (_, kv_len) in zip(piece_rows, pieces)
+                 for page in range(_ceil_div(kv_len, PAGE_SIZE))]
+    (positions,) = stage_int32(pages.device, (positions, (len(positions),)))
+    return pages.index_select(0, positions)
+
+
 class Prefill:
     """Run prefill layers serially on one device, with fixed attention on a side stream."""
 
@@ -340,7 +419,7 @@ class Prefill:
             backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
                 (SM100/SM103). Selection is fixed for the plan lifetime.
             lean192: Immutable auto/on/off policy for the optimized Indexer. Auto
-                preserves existing dispatch; off disables only Lean192. Forced
+                leaves the choice to the Index dispatch; off disables only Lean192. Forced
                 on rejects requests outside its existing dense SM103 BF16 policy;
                 in particular it does not enable Lean192 for paged serving.
 
@@ -377,7 +456,7 @@ class Prefill:
     ) -> PrefillStep:
         """Stage host (q_len,kv_len) pairs in packed query order.
         Page tables are int32 [>=B,>=pages] logical-to-physical mappings.
-        Optimized also accepts compact 1-D active Index page IDs for unsplit requests."""
+        Optimized also accepts compact 1-D active Index page IDs."""
         lens = tuple((int(q_len), int(kv_len)) for q_len, kv_len in request_lens)
         return PrefillStep(self, lens, page_table, index_page_table)
 
@@ -436,6 +515,13 @@ def warmup_request_sets(
             sets.append(((kv_len, kv_len),))
     for kv_len in (24576, 32768, 40960):
         sets.append(((MAX_Q_PER_REQUEST, kv_len),))
+    # Steps above 8192 queries split one request into packed pieces.
+    for q_len in (MAX_Q_PER_REQUEST + 16, 2 * MAX_Q_PER_REQUEST):
+        sets.append(((q_len, max(q_len, 40960)),))
+    # The default KV-outer index kernels compile per atomic replica count, a power of two from 16
+    # to 128 that grows with queries per KV page: 160 and 320 queries over 2560 tokens select 32
+    # and 64, the sets above only 16 and 128.
+    sets += [((q_len, 2560),) for q_len in (160, 320)]
     if index_format == "mxfp6":
         # The MXFP6 router partitions every 256 pages, for any batch.
         sets += [((16, 32768 * p + PAGE_SIZE),) for p in range(1, 32)]
@@ -459,7 +545,10 @@ def warmup(
     """Compile and execute a serving geometry using initialized dummy caches.
 
     Allocates temporary storage on prefill.device and submits CUDA work; use outside graph capture.
-    It does not bind caller model tensors.
+    It does not bind caller model tensors. With the optimized backend, the first call for a device and
+    BF16/E4M3 Index format also compiles every Index router kernel the Index dispatch can bind for steps
+    within the per-request KV limit, and an E4M3FN kv_dtype compiles the step's page conversion, so
+    that steps of other geometries compile no Index router or page-conversion kernel at run time.
 
     Args:
         prefill: Prefill runner whose backend, device and partial dtype select the programs.
@@ -486,6 +575,9 @@ def warmup(
     logical = torch.arange(width, dtype=torch.int32, device=device)
     table = logical.expand(len(lens), width).contiguous()
     index_table = logical.expand(len(lens), width).contiguous()
+    if prefill.backend == "optimized" and len(lens) > 1:
+        # Optimized binds a compact active Index map: padded rows of shorter requests leave gaps.
+        index_table = torch.cat([logical[: _ceil_div(kv_len, PAGE_SIZE)] for _, kv_len in lens])
     blackwell = torch.cuda.get_device_capability(device)[0] >= 10
     shape = ((pages, KV_HEADS, PAGE_SIZE, 2 * HEAD_DIM) if blackwell else
              (pages, PAGE_SIZE, KV_HEADS, 2 * HEAD_DIM))
@@ -524,6 +616,18 @@ def warmup(
         out=torch.empty_like(q, dtype=torch.bfloat16),
         index_q_scales=scales,
     )
+    if prefill.backend == "optimized" and index_format in ("bf16", "fp8"):
+        from .backends.optimized.index import compile_serving_index_variants
+
+        compile_serving_index_variants(device, index_q.dtype, max_kv_tokens=MAX_KV_PER_REQUEST)
+    if prefill.backend == "optimized" and kv_dtype == torch.float8_e4m3fn:
+        # The dummy cache above holds exactly the step's pages, so the step converted it whole. A serving
+        # cache is larger and converts the step's pages: run that conversion once on a two-page cache.
+        from .backends.optimized.kernels.kv_pages import PagedKVConversion
+
+        dummy_k, dummy_v = torch.zeros((2,) + tuple(kv.shape[1:]), dtype=kv_dtype, device=device).split(
+            HEAD_DIM, dim=-1)
+        PagedKVConversion.prepare(dummy_k, dummy_v, torch.zeros((1, 1), dtype=torch.int32, device=device), [1])
     if blackwell and prefill.backend != "optimized":
         from .cute.paged_fixed_maps import refresh_maps
 

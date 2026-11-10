@@ -10,6 +10,19 @@ import math
 import torch
 from .src.sm100.router import indexer_local_top16, indexer_packed_top16
 
+# Field metadata of host-only plan state (host values, launch wrappers and caches): runtime._backing_tensors
+# does not walk them, as every tensor they refer to is also held by another field.
+HOST_ONLY = {"ownership": False}
+# Router options of the BF16 2-SM Index specialization: Q256 CTAs paired by 2-SM UMMA, early
+# accumulator release and the 32-column epilogue.
+TWO_SM_ROUTER_OPTIONS = dict(_query_tile=256, _two_sm=True, _force_early_acc_release=True,
+                             _chunked_epilogue=True)
+# E4M3 single-SM Q256 rows with early accumulator release (IndexDispatch.fp8_q256).
+FP8_Q256_ROUTER_OPTIONS = dict(_query_tile=256, _force_early_acc_release=True)
+# The same E4M3 Q256 rows as 2-SM CTA pairs, full-row epilogue (IndexDispatch.fp8_two_sm, queued insertion).
+FP8_TWO_SM_ROUTER_OPTIONS = dict(_query_tile=256, _two_sm=True, _force_early_acc_release=True)
+
+
 def stage_int32(
     device: torch.device, *arrays: tuple[Sequence[int], tuple[int, ...]]
 ) -> tuple[torch.Tensor, ...]:
@@ -68,7 +81,27 @@ class IndexPipelineState:
     cutedsl_packed_partitions: int = 1
     cutedsl_packed_pages: torch.Tensor | None = None
     cutedsl_packed_tile_metadata: torch.Tensor | None = None
+    # Host (q_len, kv_len) per packed request; the 2-SM rows are staged on first bind.
+    cutedsl_packed_requests: tuple[tuple[int, int], ...] | None = field(default=None, metadata=HOST_ONLY)
+    cutedsl_packed_two_sm_tile_metadata: torch.Tensor | None = None
+    # Packed router launch chosen at bind time for finer KV partitions or Q256 rows (else None: the
+    # prepared PB1024 metadata and partition count above are used).
+    cutedsl_packed_router_tile_metadata: torch.Tensor | None = None
+    cutedsl_packed_router_partitions: int | None = None
+    cutedsl_packed_fine_tile_metadata: dict | None = None
+    # E4M3 single-SM Q256 + early-release router bound (IndexDispatch.fp8_q256).
+    fp8_q256_bound: bool = False
+    # Parallel Top-16 insertion bound (IndexDispatch.parallel_insert).
+    parallel_insert_bound: bool = False
+    # Queued Top-16 insertion (+ setmaxnreg register split on Q256) bound (IndexDispatch.queued_insert).
+    queued_insert_bound: bool = False
+    # E4M3 Q256 rows as 2-SM CTA pairs bound (IndexDispatch.fp8_two_sm).
+    fp8_two_sm_bound: bool = False
+    # Router compiled with a runtime KV partition count (IndexDispatch.runtime_partitions).
+    runtime_partitions_bound: bool = False
     _lean192_early_router: bool = False
+    skip_fixed_blocks_bound: bool = False
+    two_sm_bound: bool = False
 
     _mega_graph: torch.cuda.CUDAGraph | None = field(
         default=None, init=False, repr=False

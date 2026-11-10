@@ -34,7 +34,7 @@
       "upstream_path": "kernels/unified_block_sparse_prefill.py",
       "upstream_git_blob": "dbb1be896bb17c80e8c26ad19e30bfae0ebbcfcd",
       "relationship": "derived-and-modified",
-      "local_sha256": "566221250cbf3ffb33d7bb7a33f8cdcffeb443cfad6e73774979a832c8a4900b"
+      "local_sha256": "8122d09167be1a6287915c635cc3bf8578e92e4af05fe430bcf6d0fa3b818b1c"
     },
     {
       "path": "python/mbsa/backends/optimized/kernels/plan.py",
@@ -44,11 +44,17 @@
       "local_sha256": "c77a72979e031e3c054fc0a99eed270d2ff6aee1332ac45396129797a8bd59ed"
     },
     {
+      "path": "python/mbsa/backends/optimized/kernels/kv_pages.py",
+      "relationship": "locally-authored",
+      "license": "Apache-2.0",
+      "local_sha256": "b3de2b7495fac0a7facf176f8f0d446b458a089e3cb8c33caaec7c126faf8b5d"
+    },
+    {
       "path": "python/mbsa/backends/optimized/kernels/merge.py",
       "upstream_path": "kernels/anthony_msa_hybrid_bsa_topk32_prefill.py",
       "upstream_git_blob": "c386402c1eacabed43f6ac0e5db70f69010bb62f",
       "relationship": "derived-and-modified",
-      "local_sha256": "9b9240cd76c6a386cad57423ddba24fd0acb97353cd01e47cbf41aa0dc1deceb"
+      "local_sha256": "9faeb144266665de14714c5f0ab3765f32348ba1cc1302470e3da0e07b4f4ff6"
     },
     {
       "path": "python/mbsa/backends/optimized/kernels/msa_sparse_attn_prefill.py",
@@ -478,13 +484,13 @@
       },
       "relationship": "derived-and-refactored",
       "license": "Apache-2.0",
-      "local_sha256": "b4d95faf1b898a01454099186aec0239fca55c867f7a8a136909f8983b043c3f"
+      "local_sha256": "5d7cfbafda8029343f862f05feeb966bbd4634fad618cefe17c1da96087f1315"
     },
     {
       "path": "python/mbsa/backends/optimized/runtime.py",
       "relationship": "locally-authored",
       "license": "Apache-2.0",
-      "local_sha256": "51cc579a2ea16df03ccb7c6be9b54c0b6e00aa4f81d375028670924214409611"
+      "local_sha256": "b22007500af5a7153cc147a4777ac3cdacd62a965229cfae85d20411b44458d5"
     },
     {
       "path": "python/mbsa/backends/optimized/index_base.py",
@@ -502,7 +508,7 @@
       },
       "relationship": "derived-and-refactored",
       "license": "Apache-2.0",
-      "local_sha256": "c63c50c4ba984434a3523ef9e5a1f441e33fc6c277c7a29615e055e1d99db9a1"
+      "local_sha256": "ac3847a7a2925d7bc41864b181c6463bf403833374e3855ecac64c88c417b5e5"
     },
     {
       "path": "python/mbsa/backends/optimized/page_map.py",
@@ -514,7 +520,7 @@
       "path": "python/mbsa/backends/optimized/index_policy.py",
       "relationship": "locally-authored",
       "license": "Apache-2.0",
-      "local_sha256": "b0ab52557fdb9bac115fc5753c26ff6cbae3a9114b4ff2c532fce0389488b0e7"
+      "local_sha256": "e8aea0dbb3820cdbecc6284b32b346af8ee381b085eca688a20692863c32c137"
     },
     {
       "path": "python/mbsa/backends/optimized/src/common/pipeline.py",
@@ -565,7 +571,7 @@
       "upstream_path": "python/mbsa/cute/src/sm100/router.py",
       "upstream_git_blob": "1377b0912d72706313afb47f4db88ae49ca6dbb5",
       "relationship": "derived-and-modified",
-      "local_sha256": "32f9f5cd237649711bb8fb1f854bedde45bf696a26544430456306cff6e338b5"
+      "local_sha256": "908ec740ce8d5e4910e1977c5d7801a49e36f0f9c2411143340d05dfeb397719"
     },
     {
       "path": "python/mbsa/backends/optimized/licenses/Block-Sparse-Attention-BSD-3-Clause.txt",

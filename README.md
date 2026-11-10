@@ -82,8 +82,13 @@ Address changes require rebinding before graph capture.
 On Blackwell, the default backend uses matching `torch.float8_e4m3fn` K/V
 caches for native FP8 QK and PV Tensor Core computation, with BF16 output.
 Supply BF16 Q to convert it once per run into a shared FP8 buffer, or supply
-prequantized E4M3FN Q. The optimized backend instead converts FP8 attention
-operands to BF16 in owned buffers on each run and performs BF16 attention.
+prequantized E4M3FN Q. The optimized backend instead converts FP8 Q and, for a
+paged cache, only the logical pages of the step's requests to BF16 in owned
+buffers on each run, then performs BF16 attention. The conversion is exact for
+every non-NaN value; its time and memory follow the step's KV length, not the
+physical cache size. A request split into Q > 8192 pieces converts its pages
+once per piece. When requests share pages and own at least as many logical
+pages as the cache holds, each run converts the whole cache instead.
 FP8 tensors contain represented operand values with unit scales; additional
 Q/K/V descale factors are not supported. Hopper attention remains BF16.
 FP8 Index routing is independent of attention storage and compute precision.
@@ -92,10 +97,15 @@ BF16 partial outputs are the API default. Pass
 `partial_dtype=torch.float8_e4m3fn` to enable FP8 partials.
 
 For serving, `mbsa.serving.Prefill` stages requests and binds layer operands.
+With `backend="optimized"`, pass the backend and the K/V cache dtype to
+`Limits.workspace_bytes(..., backend="optimized", kv_dtype=...)`; the default
+arguments describe the default backend's buffers. Call `serving.warmup` with the
+serving `kv_dtype` (E4M3FN for an FP8 cache) so that the steps after warmup
+compile no kernel.
 
 Preparation and serving accept `backend="default"` and `backend="optimized"`. The optimized backend combines the MBSA Index scorer with BSA, MSA and combine kernels on SM100 and SM103 with CuTe DSL 4.6.0. Pass `backend="optimized"` to `prepare_cutedsl_pipeline` or `Prefill(device, backend="optimized")`. The default backend also supports SM90.
 
-The optimized Index stage supports BF16, FP16, E4M3 and MX formats. FP8 attention operands are converted to BF16 in owned buffers on each run. BSA writes contiguous `[T,Hq,D]` output and uses static persistent scheduling across KV lengths. Mixed requests use a separate attention-state merge; batch one uses fused initial-state combine. Original source notices, license texts and adaptation records ship under `mbsa/backends/optimized/`.
+The optimized Index stage supports BF16, FP16, E4M3 and MX formats. FP8 attention operands are converted to BF16 in owned buffers on each run: Q, and the pages that the step's requests own. BSA writes contiguous `[T,Hq,D]` output and uses static persistent scheduling across KV lengths. Mixed requests use a separate attention-state merge; batch one uses fused initial-state combine. Original source notices, license texts and adaptation records ship under `mbsa/backends/optimized/`.
 
 ### Lean192 ON/OFF comparison
 
@@ -108,7 +118,8 @@ pipeline = prepare_cutedsl_pipeline(
 print(pipeline.lean192, pipeline.lean192_enabled)  # requested policy, actual selection
 ```
 
-- `"auto"` (default) preserves the existing dispatch.
+- `"auto"` (default) leaves the choice to the Index dispatch (below); on SM103
+  it binds the 2-SM Index kernel instead of Lean192 above 12K KV tokens.
 - `"off"` disables only the 192-thread Indexer, retaining the optimized backend
   and its regular CuTe Indexer. It does not select the V3 C++ Indexer.
 - `"on"` requires the existing SM103 BF16 specialization: one dense, unpacked
@@ -134,7 +145,38 @@ the target workload, including neighboring operators: attention latency alone
 does not establish the effect of clock/power history on a model. No universal
 ON/OFF performance recommendation is implied by the switch.
 
-Optimized Index page maps bind directly to the supplied tensor. Active request rows must form one adjacent contiguous storage span, with a 16-byte base alignment for unpacked or MX Index and 4-byte base alignment for packed non-MX Index. Individual compact request rows need not be 16-byte aligned. Preparation and rebind reject gapped or strided maps and an unaligned base. Pass compact active page IDs for variable-length requests. Optimized serving accepts a 1-D compact Index map and requests with Q <= 8192; split longer requests and their maps before staging to avoid map duplication. In-place map updates are visible during eager execution and CUDA Graph replay.
+### Optimized Index dispatch
+
+On SM103 the optimized backend binds, for every BF16 or E4M3 Index launch, the
+exact variant measured fastest on B300 (under the board power cap, less energy
+per call is also less time):
+
+| Variant | Taken for |
+|---|---|
+| 256-row query tile with 2-SM UMMA (each SM loads half of a K tile) | BF16 Index: single requests above 12K KV tokens and packed steps, when its estimated makespan allows |
+| E4M3 256-row query tile outside the dense T=8192 geometry, early accumulator release | E4M3 Index, when its estimated makespan allows |
+| E4M3 256-row tiles as 2-SM CTA pairs | E4M3 Index from 32K KV tokens and 256-block partitions |
+| Parallel or queued Top-16 insertion | E4M3 Index; BF16 single requests (parallel only) |
+| No Index MMA for prefix and local-window blocks, which attention reads anyway | 2-SM and Lean192 kernels; others up to 256K KV tokens |
+| Finer KV partitions (512 to 64 blocks, at most 32 partitions) | Launches whose 1024-block grid leaves SMs idle: short queries with long KV, packed steps. Beside Fixed attention (batch one) only where they save at least the Fixed attention time |
+
+Every variant computes the same block scores and keeps the same Top-16 order,
+so routes, output and LSE are bit-identical to the baseline selection; only
+speed and the Index workspace (finer partitions, which
+`Limits.workspace_bytes(backend="optimized")` includes) change. Set
+`MBSA_INDEX_DISPATCH=baseline` to bind the baseline selection instead (Q128,
+the dense E4M3 Q256 rules, Lean192, 1024- or 2048-block partitions), for
+example to compare the two. The variable is read when a plan is prepared or
+rebound. Other GPUs, and FP16 or MX Index formats, always use the baseline
+selection: the policy thresholds are B300 measurements. Dispatch kernels take
+the KV partition count at run time, so the compiled kernels no longer depend on
+the partition count, only on the partition width and merge form. With the
+optimized backend, the first `serving.warmup` call for a device and BF16/E4M3
+Index format also compiles every Index router kernel the dispatch can bind for
+paged steps (about 45 BF16 or 65 E4M3 kernels), so steps of other geometries
+compile no Index router kernel at run time.
+
+Optimized Index page maps bind directly to the supplied tensor. Active request rows must form one adjacent contiguous storage span, with a 16-byte base alignment for unpacked or MX Index and 4-byte base alignment for packed non-MX Index. Individual compact request rows need not be 16-byte aligned. Preparation and rebind reject gapped or strided maps and an unaligned base. Pass compact active page IDs for variable-length requests. Optimized serving accepts a 1-D compact Index map. As with the default backend, requests with Q > 8192 are split into pieces of at most 8192 queries; the pieces' Index map is gathered once when the step is prepared. In-place map updates are visible during eager execution and CUDA Graph replay, except in such split steps, which read the copies gathered at preparation.
 
 Direct Q/K/V, Index Q and floating Index K, MX Q scales and caller output
 require 16-byte base alignment; MXFP6 Index K requires 128-byte alignment.
