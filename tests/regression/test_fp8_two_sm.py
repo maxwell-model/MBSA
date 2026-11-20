@@ -122,8 +122,10 @@ class Fp8TwoSmRouter(unittest.TestCase):
                     self.assert_same(paired, reference)
 
     def test_wrapper_opt_in_takes_pairs_on_the_q256_geometry_only(self):
+        # The dense PB2048 rule resolves Q256 at 131072 KV tokens on SM103 only (SM100: 196608 to 262144).
+        sm103 = torch.cuda.get_device_capability() == (10, 3)
         for name, qn, kv, mapping, width, extra, paired in (
-                ('dense_default_q256', 8192, 131072, 'identity', 2048, {}, True),
+                ('dense_default_q256', 8192, 131072, 'identity', 2048, {}, sm103),
                 ('fp8_q256_opt_in', 4096, 262144, 'permuted', 1024, dict(_fp8_q256=True), True),
                 ('q128_geometry', 1024, 131072, 'permuted', 1024, {}, False),
                 ('below_kv_floor', 8192, 8192, 'identity', 1024, dict(_query_tile=256), False)):

@@ -413,7 +413,8 @@ class Prefill:
         """Create a serial serving runner for one device and backend.
 
         Args:
-            device: CUDA device accepted by torch.device; used for stage allocations and streams.
+            device: CUDA device accepted by torch.device; used for stage allocations and streams. A bare
+                "cuda" is resolved once, here, to the current device.
             partial_dtype: BF16 or torch.float8_e4m3fn partial-output storage. None reads
                 MBSA_FP8_PARTIAL_OUT (0=BF16, the default; 1=E4M3FN). Final output remains BF16.
             backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
@@ -427,12 +428,13 @@ class Prefill:
             None. Device buffers and compilation are deferred until a step first runs.
         """
         from .api import _resolve_partial_dtype, _validate_backend
+        from .backends._binding import explicit_device
         from .backends._index_options import validate_lean192
 
         _validate_backend(backend)
         validate_lean192(lean192, backend=backend)
         partial_dtype = _resolve_partial_dtype(partial_dtype)
-        self.device = torch.device(device)
+        self.device = explicit_device(device)
         self.partial_dtype = partial_dtype
         self.backend = backend
         self._lean192 = lean192
@@ -469,7 +471,8 @@ def runner(device: torch.device, partial_dtype: torch.dtype | None = None, *,
     """Get the process-cached serial runner for a device, dtype and backend.
 
     Args:
-        device: CUDA device accepted by torch.device; part of the cache key.
+        device: CUDA device accepted by torch.device; part of the cache key. A bare "cuda" names the
+            current device at each call, so each GPU gets its own runner.
         partial_dtype: BF16 or torch.float8_e4m3fn partial-output storage. None reads
             MBSA_FP8_PARTIAL_OUT (0=BF16, the default; 1=E4M3FN). Final output remains BF16.
         backend: Implementation selector: "default" (SM90/SM100/SM103) or "optimized"
@@ -482,12 +485,13 @@ def runner(device: torch.device, partial_dtype: torch.dtype | None = None, *,
         independent runner state is needed.
     """
     from .api import _resolve_partial_dtype, _validate_backend
+    from .backends._binding import explicit_device
     from .backends._index_options import validate_lean192
 
     _validate_backend(backend)
     validate_lean192(lean192, backend=backend)
     partial_dtype = _resolve_partial_dtype(partial_dtype)
-    key = (torch.device(device), partial_dtype, backend, lean192)
+    key = (explicit_device(device), partial_dtype, backend, lean192)
     if key not in _RUNNERS:
         _RUNNERS[key] = Prefill(key[0], partial_dtype=partial_dtype, backend=backend,
                                lean192=lean192)
@@ -522,6 +526,9 @@ def warmup_request_sets(
     # to 128 that grows with queries per KV page: 160 and 320 queries over 2560 tokens select 32
     # and 64, the sets above only 16 and 128.
     sets += [((q_len, 2560),) for q_len in (160, 320)]
+    # One-token requests (decode-like steps): the optimized backend runs them query-outer, in one
+    # attention pass over fixed and routed blocks; a packed step binds its own Index launch.
+    sets += [((1, 4096),), ((1, 4096), (1, 4096))]
     if index_format == "mxfp6":
         # The MXFP6 router partitions every 256 pages, for any batch.
         sets += [((16, 32768 * p + PAGE_SIZE),) for p in range(1, 32)]
@@ -545,10 +552,12 @@ def warmup(
     """Compile and execute a serving geometry using initialized dummy caches.
 
     Allocates temporary storage on prefill.device and submits CUDA work; use outside graph capture.
-    It does not bind caller model tensors. With the optimized backend, the first call for a device and
-    BF16/E4M3 Index format also compiles every Index router kernel the Index dispatch can bind for steps
-    within the per-request KV limit, and an E4M3FN kv_dtype compiles the step's page conversion, so
-    that steps of other geometries compile no Index router or page-conversion kernel at run time.
+    It does not bind caller model tensors. With the optimized backend, the first call for a GPU and a
+    BF16, FP16 or E4M3 Index format also compiles every Index router kernel the Index dispatch can bind for
+    steps within the per-request KV limit (the default dispatch on SM103, the baseline selection on SM100
+    or with MBSA_INDEX_DISPATCH=baseline), and an E4M3FN kv_dtype compiles the step's page conversion, so
+    that steps of other geometries compile no Index router or page-conversion kernel at run time. The
+    MXFP6 scorer compiles one kernel per partition count; warmup_request_sets lists a step for each.
 
     Args:
         prefill: Prefill runner whose backend, device and partial dtype select the programs.
@@ -616,7 +625,7 @@ def warmup(
         out=torch.empty_like(q, dtype=torch.bfloat16),
         index_q_scales=scales,
     )
-    if prefill.backend == "optimized" and index_format in ("bf16", "fp8"):
+    if prefill.backend == "optimized" and index_format in ("bf16", "fp16", "fp8"):
         from .backends.optimized.index import compile_serving_index_variants
 
         compile_serving_index_variants(device, index_q.dtype, max_kv_tokens=MAX_KV_PER_REQUEST)

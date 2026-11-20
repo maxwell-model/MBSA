@@ -34,7 +34,7 @@
       "upstream_path": "kernels/unified_block_sparse_prefill.py",
       "upstream_git_blob": "dbb1be896bb17c80e8c26ad19e30bfae0ebbcfcd",
       "relationship": "derived-and-modified",
-      "local_sha256": "8122d09167be1a6287915c635cc3bf8578e92e4af05fe430bcf6d0fa3b818b1c"
+      "local_sha256": "cdec1868a66969c0ecd792bffb02637fc00aae7405f860e23b86d95fe36e6803"
     },
     {
       "path": "python/mbsa/backends/optimized/kernels/plan.py",
@@ -222,7 +222,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/build_k2q_csr/build_k2q_csr.cu",
       "upstream_git_blob": "33ce23af1633a2fb561c55aada238863b4073729",
       "relationship": "derived-and-modified",
-      "local_sha256": "3e23c87979f791332ef3d05f02182f1b355e795fb21db5d85c8b5e220d3e461b"
+      "local_sha256": "0c117e575cde2841a0dedc4d423cd77bfe6cfe9d5b3e90d79f46cf350948ef42"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/__init__.py",
@@ -264,7 +264,7 @@
       "upstream_path": "third_party/msa/python/fmha_sm100/cute/src/sm100/prepare_k2q_csr.py",
       "upstream_git_blob": "c1404ec894c32e6f31c8ee324ba97c02783b8a7c",
       "relationship": "derived-and-modified",
-      "local_sha256": "733a3bffc40004d9d6bd40383b5ff1329b2cefaf991b7046187844e005aeb3c4"
+      "local_sha256": "ca0ab2f4acb822a78a050a198662584a023761a67ff2fe6f7ccc369b574dea6d"
     },
     {
       "path": "python/mbsa/backends/optimized/msa/cute/src/sm100/prepare_scheduler.py",
@@ -287,7 +287,7 @@
       "upstream_path": "flashinfer/cute_dsl/sparse/bsa_attn_sm100_blk128.py",
       "upstream_git_blob": "8e7a96552687de2852e04b1b522da60a5e16e8db",
       "relationship": "derived-and-modified",
-      "local_sha256": "219fd241ebbe0b12d2216e868d6b5e93ee09689e49f89bc52d85ad2984956a6d",
+      "local_sha256": "73b294c18de4cf67912df55644851760ad60de21098963f62f0c6cffaef6e4ac",
       "repository": "https://github.com/flashinfer-ai/flashinfer",
       "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
     },
@@ -359,7 +359,7 @@
       "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/block_info.py",
       "upstream_git_blob": "aefec298cfdd42900776393e05a049a03228ee98",
       "relationship": "derived-and-modified",
-      "local_sha256": "d01ad33c33b9e16daa3a9d29e9fb8267bcdaae1e3fbb942eb9922413dafeec3c",
+      "local_sha256": "b86376559d6c50b2bed73d2a727add54c0186edd03594fe8efc9a4cbe0f4ab64",
       "repository": "https://github.com/flashinfer-ai/flashinfer",
       "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
     },
@@ -377,7 +377,7 @@
       "upstream_path": "flashinfer/cute_dsl/sparse/sm100_blk128/flash_fwd_sm100.py",
       "upstream_git_blob": "eea6bb0fd3a858e13a3c5d8ccd6d1e531e370928",
       "relationship": "derived-and-modified",
-      "local_sha256": "3901e6895fe681e539ba41bcb0ddd2eca3d8416400f9d582b6555aebda5732b1",
+      "local_sha256": "c10108f3411689a62b0c9888d616364973251146f66058ae5ee547478366ba3f",
       "repository": "https://github.com/flashinfer-ai/flashinfer",
       "commit": "91bda04c66f7cb851e1ab3b78b9fecea644b9844"
     },
@@ -484,13 +484,13 @@
       },
       "relationship": "derived-and-refactored",
       "license": "Apache-2.0",
-      "local_sha256": "5d7cfbafda8029343f862f05feeb966bbd4634fad618cefe17c1da96087f1315"
+      "local_sha256": "fe6f83be37ea98fc13c35947aaa27495239d04b21e7f617d02e1ad79eb6b9cea"
     },
     {
       "path": "python/mbsa/backends/optimized/runtime.py",
       "relationship": "locally-authored",
       "license": "Apache-2.0",
-      "local_sha256": "b22007500af5a7153cc147a4777ac3cdacd62a965229cfae85d20411b44458d5"
+      "local_sha256": "9e88c41b03dc5439995e86a3e55b1c49feeb2e90f9b91455e49cdd67e43f209a"
     },
     {
       "path": "python/mbsa/backends/optimized/index_base.py",
@@ -508,7 +508,7 @@
       },
       "relationship": "derived-and-refactored",
       "license": "Apache-2.0",
-      "local_sha256": "ac3847a7a2925d7bc41864b181c6463bf403833374e3855ecac64c88c417b5e5"
+      "local_sha256": "a508bd302fbd7df4a55723e90832b3fff7656c9726c08a5bdc788ce064ea94b8"
     },
     {
       "path": "python/mbsa/backends/optimized/page_map.py",
@@ -520,7 +520,7 @@
       "path": "python/mbsa/backends/optimized/index_policy.py",
       "relationship": "locally-authored",
       "license": "Apache-2.0",
-      "local_sha256": "e8aea0dbb3820cdbecc6284b32b346af8ee381b085eca688a20692863c32c137"
+      "local_sha256": "a3e40944800fd86d5d672a9522007bdcbbb9d7c504d8b2dbdd1f4b0fefa1412d"
     },
     {
       "path": "python/mbsa/backends/optimized/src/common/pipeline.py",
@@ -571,7 +571,7 @@
       "upstream_path": "python/mbsa/cute/src/sm100/router.py",
       "upstream_git_blob": "1377b0912d72706313afb47f4db88ae49ca6dbb5",
       "relationship": "derived-and-modified",
-      "local_sha256": "908ec740ce8d5e4910e1977c5d7801a49e36f0f9c2411143340d05dfeb397719"
+      "local_sha256": "f383373eadbe9d25156712654ebc902ea30b41ed4454b86370e9b7787b90d14c"
     },
     {
       "path": "python/mbsa/backends/optimized/licenses/Block-Sparse-Attention-BSD-3-Clause.txt",

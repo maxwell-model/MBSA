@@ -138,8 +138,17 @@ class FlashAttentionForwardSm100:
         implicit_fixed_load_reduce: bool = False,
         grouped_output: bool = False,
         is_varlen: bool = False,
+        implicit_fixed_route_blocks: int = 0,
     ):
         self.is_varlen = is_varlen
+        # Implicit fixed blocks plus up to this many routed blocks per one-token packed tile (BlockInfo).
+        self.route_blocks = int(implicit_fixed_route_blocks)
+        if self.route_blocks and not (implicit_fixed_support and is_varlen and is_causal):
+            raise ValueError("routed blocks require causal implicit fixed support with packed tiles")
+        if self.route_blocks and implicit_fixed_load_reduce:
+            raise ValueError("routed blocks use the general masked load path")
+        if self.route_blocks and not pack_gqa:
+            raise ValueError("routed blocks are per KV head: they require packed GQA tiles")
         self.use_tma_KV = True
         # self.dtype = dtype
         # padding head_dim to a multiple of 16 as k_block_size
@@ -395,8 +404,12 @@ class FlashAttentionForwardSm100:
         head_idx: Int32,
         m_block: Int32,
         block_sparse_num: Int32,
+        mBlockIndex: Optional[cute.Tensor] = None,
     ) -> Int32:
         if const_expr(self.implicit_fixed_support):
+            if const_expr(self.route_blocks):
+                return block_info.get_implicit_fixed_count(m_block) + block_info.get_route_count(
+                    mBlockIndex, head_idx)
             return block_info.get_implicit_fixed_count(m_block)
         if const_expr(mBlockNums is not None):
             return mBlockNums[batch_idx, head_idx, m_block]
@@ -1238,6 +1251,7 @@ class FlashAttentionForwardSm100:
                 tile_scheduler,
                 block_sparse_num,
                 mBlockNums,
+                mBlockIndex,
             )
             # Dealloc the tensor memory buffer
             tmem.relinquish_alloc_permit()
@@ -1342,6 +1356,7 @@ class FlashAttentionForwardSm100:
                 tile_scheduler,
                 block_sparse_num,
                 mBlockNums,
+                mBlockIndex,
             )
             tmem_alloc_barrier.arrive()
 
@@ -1434,6 +1449,7 @@ class FlashAttentionForwardSm100:
                     self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
+                    self.route_blocks, seqlen.offset_q,
                 )
             mQ_cur = mQ[None, None, head_idx, seqlen.tensor_batch_idx]
             if const_expr(self.is_varlen):
@@ -1540,6 +1556,7 @@ class FlashAttentionForwardSm100:
                 head_idx,
                 m_block,
                 block_sparse_num,
+                mBlockIndex,
             )
             if const_expr(mBlockNums is not None or self.implicit_fixed_support):
                 process_tile = (
@@ -1671,6 +1688,7 @@ class FlashAttentionForwardSm100:
         tile_scheduler: TileSchedulerProtocol,
         block_sparse_num: Int32,
         mBlockNums: Optional[cute.Tensor],
+        mBlockIndex: Optional[cute.Tensor] = None,
     ):
         tSrQ = tiled_mma_qk.make_fragment_A(sQ)
         tSrK = tiled_mma_qk.make_fragment_B(sK)
@@ -1751,6 +1769,7 @@ class FlashAttentionForwardSm100:
                     self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
+                    self.route_blocks, seqlen.offset_q,
                 )
 
             raw_block_count = self.get_block_count(
@@ -1760,6 +1779,7 @@ class FlashAttentionForwardSm100:
                 head_idx,
                 m_block,
                 block_sparse_num,
+                mBlockIndex,
             )
             if const_expr(mBlockNums is not None or self.implicit_fixed_support):
                 process_tile = (
@@ -2023,9 +2043,10 @@ class FlashAttentionForwardSm100:
         cute.arch.make_warp_uniform(cute.arch.warp_idx()) % 4
 
         work_tile = tile_scheduler.initial_work_tile_info()
+        # A routed tile holds one query token: its fixed union is exact, and routed blocks lie outside it.
         causal_mask_fn = (
             apply_implicit_fixed_causal_mask
-            if const_expr(self.implicit_fixed_support)
+            if const_expr(self.implicit_fixed_support and not self.route_blocks)
             else apply_block_causal_mask
         )
         while work_tile.is_valid_tile:
@@ -2038,6 +2059,7 @@ class FlashAttentionForwardSm100:
                     self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
+                    self.route_blocks, seqlen.offset_q,
                 )
 
             # n_block(i): maps logical index i to actual KV block index via q2k_block_index
@@ -2048,6 +2070,7 @@ class FlashAttentionForwardSm100:
                 head_idx,
                 m_block,
                 block_sparse_num,
+                mBlockIndex,
             )
             if const_expr(mBlockNums is not None or self.implicit_fixed_support):
                 has_work = (
@@ -2450,6 +2473,7 @@ class FlashAttentionForwardSm100:
         tile_scheduler: TileSchedulerProtocol,
         block_sparse_num: Int32,
         mBlockNums: Optional[cute.Tensor],
+        mBlockIndex: Optional[cute.Tensor] = None,
     ):
         tidx = cute.arch.thread_idx()[0] % (
             cute.arch.WARP_SIZE * len(self.correction_warp_ids)
@@ -2477,6 +2501,7 @@ class FlashAttentionForwardSm100:
                     self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
+                    self.route_blocks, seqlen.offset_q,
                 )
 
             mO_cur = self.output_request_view(mO, seqlen, head_idx, m_block, o_ragged_strides)
@@ -2508,6 +2533,7 @@ class FlashAttentionForwardSm100:
                 head_idx,
                 m_block,
                 block_sparse_num,
+                mBlockIndex,
             )
             if const_expr(mBlockNums is not None or self.implicit_fixed_support):
                 has_work = (
@@ -3091,6 +3117,7 @@ class FlashAttentionForwardSm100:
                     self.qhead_per_kvhead if const_expr(self.pack_gqa) else 1,
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
+                    self.route_blocks, seqlen.offset_q,
                 )
 
             mO_cur = self.output_request_view(mO, seqlen, head_idx, m_block, o_ragged_strides)

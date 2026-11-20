@@ -29,6 +29,7 @@ def _bind(env, requests, dtype=torch.bfloat16, scores=None, packed_partitions=1)
     from mbsa.backends.optimized import index
     plan = mock.MagicMock()
     plan.attention.fixed_only = False
+    plan.attention.query_outer = False
     plan.overlap_fixed_score = False
     plan.mxfp6_router = None
     plan.cutedsl_packed_requests = requests

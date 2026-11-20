@@ -130,10 +130,14 @@ __global__ void k2q_build_row_map_kernel(
 // 2 entries per int32 word). Each warp counts to its own row.
 // At end-of-CTA, write tile_counts[c*kWarps + w, h, r] = smem_hist[w, r]
 // and atomicAdd(row_counts[h, r], sum over w of smem_hist[w, r]).
+// A batch with more rows than one CTA's counters hold is split into row
+// ranges of range_rows rows (grid y, kRowRanges): CTA (c, y) reads the same
+// queries and counts only the rows of range y, so every (c, w, h, r) is still
+// written exactly once. Without kRowRanges the kernel is the unsplit one.
 // ---------------------------------------------------------------------------
 template <int kTopK, int kBlockK, int kWarps, bool kFromLocalTop16 = false,
           bool kBatch1IdentityRows = false, bool kDynamicOnly = false,
-          bool kCanonicalizeDynamicPadding = false>
+          bool kCanonicalizeDynamicPadding = false, bool kRowRanges = false>
 __global__ void k2q_hist_kernel(
     int* __restrict__ q2k,
     int const* __restrict__ cu_q,
@@ -145,9 +149,16 @@ __global__ void k2q_hist_kernel(
     int H, int B, int S_Q,
     int total_rows, int max_kv_blocks,
     int q_per_cta, int q_per_warp,
-    int candidate_stride_h, int candidate_stride_k, int candidate_stride_q)
+    int candidate_stride_h, int candidate_stride_k, int candidate_stride_q,
+    int range_rows)
 {
     constexpr int kThreads = kWarps * kWarpSize;
+    int row_begin = 0;
+    int row_count = total_rows;
+    if constexpr (kRowRanges) {
+        row_begin = blockIdx.y * range_rows;
+        row_count = min(range_rows, total_rows - row_begin);
+    }
     extern __shared__ int smem_hist_int[];
     int* smem_hist = smem_hist_int;
     int tid = threadIdx.x;
@@ -160,7 +171,7 @@ __global__ void k2q_hist_kernel(
     int q_end_warp = min(q_start_warp + q_per_warp, q_end_cta);
 
     constexpr int kInt4PerToken = kTopK / 4;
-    int packed_per_warp = (total_rows + 1) >> 1;
+    int packed_per_warp = ((kRowRanges ? range_rows : total_rows) + 1) >> 1;
     int* my_hist = smem_hist + warp_id * packed_per_warp;
 
     for (int h = 0; h < H; ++h) {
@@ -256,8 +267,8 @@ __global__ void k2q_hist_kernel(
                         } else {
                             row = my_row_map[kvb_local];
                         }
-                        if (row >= 0 && row < total_rows) {
-                            atomic_inc_int16_packed(my_hist, row);
+                        if (row >= row_begin && row < row_begin + row_count) {
+                            atomic_inc_int16_packed(my_hist, row - row_begin);
                         }
                     }
                 }
@@ -270,19 +281,19 @@ __global__ void k2q_hist_kernel(
         // unpacking int16 entries from SMEM.
         int* my_tile = tile_counts +
             ((size_t)(c * kWarps + warp_id) * H + h) * total_rows;
-        for (int i = lane; i < total_rows; i += kWarpSize) {
-            my_tile[i] = read_int16_packed(my_hist, i);
+        for (int i = lane; i < row_count; i += kWarpSize) {
+            my_tile[row_begin + i] = read_int16_packed(my_hist, i);
         }
         __syncthreads();
 
         // Sum across warps (int32 accumulator), atomicAdd to row_counts.
-        for (int i = tid; i < total_rows; i += kThreads) {
+        for (int i = tid; i < row_count; i += kThreads) {
             int sum = 0;
             #pragma unroll
             for (int w = 0; w < kWarps; ++w) {
                 sum += read_int16_packed(smem_hist + w * packed_per_warp, i);
             }
-            if (sum > 0) atomicAdd(&head_row_counts[i], sum);
+            if (sum > 0) atomicAdd(&head_row_counts[row_begin + i], sum);
         }
         if (h + 1 < H) __syncthreads();
     }
@@ -546,7 +557,7 @@ __global__ void k2q_tile_prefix_smem_kernel(
 // row count must stay < 32768 (~q_per_warp * kTopK at max sink), which
 // holds for all task.md sizes up to 1024K.
 template <int kTopK, int kBlockK, int kWarps,
-          bool kBatch1IdentityRows = false>
+          bool kBatch1IdentityRows = false, bool kRowRanges = false>
 __global__ void k2q_scatter_kernel(
     int const* __restrict__ q2k,
     int const* __restrict__ cu_q,
@@ -558,9 +569,17 @@ __global__ void k2q_scatter_kernel(
     int H, int B, int S_Q,
     int total_rows, int max_kv_blocks,
     int q_per_cta, int q_per_warp,
-    int max_seqlen_q)
+    int max_seqlen_q, int range_rows)
 {
     constexpr int kQPerIter = kWarpSize / kTopK > 0 ? kWarpSize / kTopK : 1;
+    // Row range of this CTA (grid y, kRowRanges), as in the histogram: it scatters
+    // only the edges whose row it owns; split slots still count every edge of a query.
+    int row_begin = 0;
+    int row_end = total_rows;
+    if constexpr (kRowRanges) {
+        row_begin = blockIdx.y * range_rows;
+        row_end = min(row_begin + range_rows, total_rows);
+    }
     extern __shared__ int smem_cursor_int[];
     int* smem_cursor = smem_cursor_int;
     int tid = threadIdx.x;
@@ -576,8 +595,8 @@ __global__ void k2q_scatter_kernel(
     int slot_in_q = lane % kTopK;
     bool lane_active = (lane < kQPerIter * kTopK);
 
-    // Per-warp packed cursor: total_rows int16 entries -> ceil(total_rows/2) int32.
-    int packed_per_warp = (total_rows + 1) >> 1;
+    // Per-warp packed cursor: one int16 per row of the CTA's range -> ceil(rows/2) int32.
+    int packed_per_warp = ((kRowRanges ? range_rows : total_rows) + 1) >> 1;
     int* my_cursor = smem_cursor + warp_id * packed_per_warp;
 
     for (int h = 0; h < H; ++h) {
@@ -663,8 +682,14 @@ __global__ void k2q_scatter_kernel(
                         int q_abs = cu_q[batch[u]] + qloc[u];
                         split_counts[(size_t)q_abs * H + h] = valid_count;
                     }
-                    if (valid_edge) {
-                        int slot = warp_ordered_slot(my_cursor, r, valid_mask, lane);
+                    bool owned_edge = valid_edge;
+                    unsigned int owned_mask = valid_mask;
+                    if constexpr (kRowRanges) {
+                        owned_edge = valid_edge && r >= row_begin && r < row_end;
+                        owned_mask = __ballot_sync(0xFFFFFFFFu, owned_edge);
+                    }
+                    if (owned_edge) {
+                        int slot = warp_ordered_slot(my_cursor, r - row_begin, owned_mask, lane);
                         int out_pos = abs_v[u] + slot;
                         head_qidx[out_pos] = qloc[u];
                         if (qsplit_idx != nullptr) {
@@ -710,8 +735,14 @@ __global__ void k2q_scatter_kernel(
                 if (split_counts != nullptr && valid_q && slot_in_q == 0) {
                     split_counts[(size_t)my_qi * H + h] = valid_count;
                 }
-                if (valid_edge) {
-                    int slot = warp_ordered_slot(my_cursor, row, valid_mask, lane);
+                bool owned_edge = valid_edge;
+                unsigned int owned_mask = valid_mask;
+                if constexpr (kRowRanges) {
+                    owned_edge = valid_edge && row >= row_begin && row < row_end;
+                    owned_mask = __ballot_sync(0xFFFFFFFFu, owned_edge);
+                }
+                if (owned_edge) {
+                    int slot = warp_ordered_slot(my_cursor, row - row_begin, owned_mask, lane);
                     int out_pos = my_abs_base[row] + slot;
                     head_qidx[out_pos] = q_local;
                     if (qsplit_idx != nullptr) {
@@ -868,13 +899,21 @@ static void launch_pipeline(
     // SMEM per CTA = kWarps * total_rows * sizeof(int) (for both H and S).
     // Want at least 2 CTAs/SM for memory parallelism. SM100 SMEM = 228KB.
     // Pick the largest kWarps that fits two CTAs/SM, capped at 4.
-    // SMEM cursor packed as int16 (2 entries per int32 word):
-    int per_warp_smem = ((total_rows + 1) >> 1) * (int)sizeof(int);
+    // SMEM cursor packed as int16 (2 entries per int32 word). A batch whose
+    // rows exceed one CTA's shared memory (kMaxRangeRows int16 counters, the
+    // 227 KB opt-in limit) is split into equal row ranges along grid y.
+    constexpr int kMaxRangeRows = 116224;
+    int row_ranges = std::max(1, (total_rows + kMaxRangeRows - 1) / kMaxRangeRows);
+    int range_rows = (total_rows + row_ranges - 1) / row_ranges;
+    int per_warp_smem = ((range_rows + 1) >> 1) * (int)sizeof(int);
     int kWarps_pick = 4;
     while (kWarps_pick > 1 && (kWarps_pick * per_warp_smem) * 2 > 228 * 1024) {
         kWarps_pick >>= 1;
     }
     if (kWarps_pick < 1) kWarps_pick = 1;
+    // Row ranges are at least half of kMaxRangeRows long, which leaves one warp per CTA: only that
+    // instantiation carries the row-range code.
+    TORCH_CHECK(row_ranges == 1 || kWarps_pick == 1, "row ranges require one histogram warp per CTA");
 
     // -- Pick G (CTAs) ----------------------------------------------------
     // For each (kWarps, per_warp_smem) pair, the SMEM-bound occupancy is
@@ -935,15 +974,16 @@ static void launch_pipeline(
     }
 
     auto launch_hist_scatter = [&](auto kWarps_const, auto batch1_identity_const,
-                                   auto compact_schedule_const) {
+                                   auto compact_schedule_const, auto row_ranges_const) {
         constexpr int W = decltype(kWarps_const)::value;
+        constexpr bool kRowRanges = decltype(row_ranges_const)::value;
         constexpr bool kBatch1IdentityRows =
             decltype(batch1_identity_const)::value;
         constexpr bool kCompactBatch1Schedule =
             decltype(compact_schedule_const)::value;
         size_t smem_bytes = (size_t)W * per_warp_smem;
         auto scat_fn =
-            k2q_scatter_kernel<kTopK, kBlockK, W, kBatch1IdentityRows>;
+            k2q_scatter_kernel<kTopK, kBlockK, W, kBatch1IdentityRows, kRowRanges>;
         auto rprefix_fn = k2q_row_prefix_kernel<
             1024, kBatch1IdentityRows, kCompactBatch1Schedule>;
         AT_CUDA_CHECK(cudaFuncSetAttribute(
@@ -953,54 +993,54 @@ static void launch_pipeline(
             if (local_top16_dynamic_only) {
                 if (canonicalize_dynamic_padding) {
                     auto hist_fn = k2q_hist_kernel<kTopK, kBlockK, W, true,
-                                                   kBatch1IdentityRows, true, true>;
+                                                   kBatch1IdentityRows, true, true, kRowRanges>;
                     AT_CUDA_CHECK(cudaFuncSetAttribute(
                         hist_fn, cudaFuncAttributeMaxDynamicSharedMemorySize,
                         (int)smem_bytes));
-                    hist_fn<<<G, W * kWarpSize, smem_bytes, stream>>>(
+                    hist_fn<<<dim3(G, row_ranges), W * kWarpSize, smem_bytes, stream>>>(
                         q2k.data_ptr<int>(), cu_q.data_ptr<int>(), row_map.data_ptr<int>(),
                         row_counts.data_ptr<int>(), tile_counts.data_ptr<int>(),
                         local_candidate_ptr, prefix_lens_ptr,
                         H, B, S_Q, total_rows, max_kv_blocks, q_per_cta, q_per_warp,
-                        candidate_stride_h, candidate_stride_k, candidate_stride_q);
+                        candidate_stride_h, candidate_stride_k, candidate_stride_q, range_rows);
                 } else {
                     auto hist_fn = k2q_hist_kernel<kTopK, kBlockK, W, true,
-                                                   kBatch1IdentityRows, true, false>;
+                                                   kBatch1IdentityRows, true, false, kRowRanges>;
                     AT_CUDA_CHECK(cudaFuncSetAttribute(
                         hist_fn, cudaFuncAttributeMaxDynamicSharedMemorySize,
                         (int)smem_bytes));
-                    hist_fn<<<G, W * kWarpSize, smem_bytes, stream>>>(
+                    hist_fn<<<dim3(G, row_ranges), W * kWarpSize, smem_bytes, stream>>>(
                         q2k.data_ptr<int>(), cu_q.data_ptr<int>(), row_map.data_ptr<int>(),
                         row_counts.data_ptr<int>(), tile_counts.data_ptr<int>(),
                         local_candidate_ptr, prefix_lens_ptr,
                         H, B, S_Q, total_rows, max_kv_blocks, q_per_cta, q_per_warp,
-                        candidate_stride_h, candidate_stride_k, candidate_stride_q);
+                        candidate_stride_h, candidate_stride_k, candidate_stride_q, range_rows);
                 }
             } else {
                 auto hist_fn = k2q_hist_kernel<kTopK, kBlockK, W, true,
-                                               kBatch1IdentityRows, false>;
+                                               kBatch1IdentityRows, false, false, kRowRanges>;
                 AT_CUDA_CHECK(cudaFuncSetAttribute(
                     hist_fn, cudaFuncAttributeMaxDynamicSharedMemorySize,
                     (int)smem_bytes));
-                hist_fn<<<G, W * kWarpSize, smem_bytes, stream>>>(
+                hist_fn<<<dim3(G, row_ranges), W * kWarpSize, smem_bytes, stream>>>(
                     q2k.data_ptr<int>(), cu_q.data_ptr<int>(), row_map.data_ptr<int>(),
                     row_counts.data_ptr<int>(), tile_counts.data_ptr<int>(),
                     local_candidate_ptr, prefix_lens_ptr,
                     H, B, S_Q, total_rows, max_kv_blocks, q_per_cta, q_per_warp,
-                    candidate_stride_h, candidate_stride_k, candidate_stride_q);
+                    candidate_stride_h, candidate_stride_k, candidate_stride_q, range_rows);
             }
         } else {
             auto hist_fn = k2q_hist_kernel<kTopK, kBlockK, W, false,
-                                           kBatch1IdentityRows>;
+                                           kBatch1IdentityRows, false, false, kRowRanges>;
             AT_CUDA_CHECK(cudaFuncSetAttribute(
                 hist_fn, cudaFuncAttributeMaxDynamicSharedMemorySize,
                 (int)smem_bytes));
-            hist_fn<<<G, W * kWarpSize, smem_bytes, stream>>>(
+            hist_fn<<<dim3(G, row_ranges), W * kWarpSize, smem_bytes, stream>>>(
                 q2k.data_ptr<int>(), cu_q.data_ptr<int>(), row_map.data_ptr<int>(),
                 row_counts.data_ptr<int>(), tile_counts.data_ptr<int>(),
                 nullptr, nullptr,
                 H, B, S_Q, total_rows, max_kv_blocks, q_per_cta, q_per_warp,
-                0, 0, 0);
+                0, 0, 0, range_rows);
         }
 
         rprefix_fn<<<H, 1024, 0, stream>>>(
@@ -1026,25 +1066,29 @@ static void launch_pipeline(
             tile_counts.data_ptr<int>(), row_ptr.data_ptr<int>(),
             H, total_rows, G_total);
 
-        scat_fn<<<G, W * kWarpSize, smem_bytes, stream>>>(
+        scat_fn<<<dim3(G, row_ranges), W * kWarpSize, smem_bytes, stream>>>(
             q2k.data_ptr<int>(), cu_q.data_ptr<int>(), row_map.data_ptr<int>(),
             tile_counts.data_ptr<int>(), q_idx.data_ptr<int>(),
             qsplit_idx_ptr, split_counts_ptr,
             H, B, S_Q, total_rows, max_kv_blocks, q_per_cta, q_per_warp,
-            max_seqlen_q);
+            max_seqlen_q, range_rows);
     };
 
     auto launch_by_warps = [&](auto batch1_identity_const,
                                auto compact_schedule_const) {
       if (kWarps_pick == 4) {
         launch_hist_scatter(std::integral_constant<int, 4>{},
-                            batch1_identity_const, compact_schedule_const);
+                            batch1_identity_const, compact_schedule_const, std::false_type{});
       } else if (kWarps_pick == 2) {
         launch_hist_scatter(std::integral_constant<int, 2>{},
-                            batch1_identity_const, compact_schedule_const);
+                            batch1_identity_const, compact_schedule_const, std::false_type{});
+      } else if (row_ranges > 1) {
+        // More rows than one CTA's counters hold: one warp per CTA and the row-range kernels.
+        launch_hist_scatter(std::integral_constant<int, 1>{},
+                            batch1_identity_const, compact_schedule_const, std::true_type{});
       } else {
         launch_hist_scatter(std::integral_constant<int, 1>{},
-                            batch1_identity_const, compact_schedule_const);
+                            batch1_identity_const, compact_schedule_const, std::false_type{});
       }
     };
 

@@ -52,7 +52,15 @@ The optimized Index dispatch (README) has its own modules: `test_index_dispatch`
 variant module binds its kernel through `tests.common.index_dispatch` and
 compares it with the baseline selection bit for bit. On SM103 the rest of the
 suite runs with the default dispatch; `MBSA_INDEX_DISPATCH=baseline` runs it with
-the baseline selection.
+the baseline selection. Decode-like steps (one query token per request) have
+`tests/regression/test_decode_steps.py`: the reference comparison up to 32
+requests of 512K and 1M KV tokens, the heads-in-rows Index launch against one
+CTA per head bit for bit, a packed step whose CSR spans more than one row
+range of the builder, and the errors of the stage entry points and of the
+routed attention pass for plans and tiles they do not apply to. `test_index_dispatch` also checks that steps after
+`serving.warmup` compile no Index router kernel with the default dispatch and
+with the baseline selection (the one SM100 binds), and that runner and warmup
+caches are kept per GPU.
 
 Report PASS, FAIL and SKIP separately with their reasons. Do not call a
 module qualified because unsupported or dependency-missing cases were skipped.

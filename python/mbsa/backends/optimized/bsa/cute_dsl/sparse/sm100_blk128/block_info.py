@@ -16,6 +16,11 @@ class BlockInfo:
     q_token_offset: Int32
     q_seqlen: Int32
     implicit_fixed_support: cutlass.Constexpr[bool]
+    # Implicit fixed blocks followed by up to `route_blocks` routed blocks of the tile's query token:
+    # block_index[head, route_row, :] holds its block IDs, valid IDs first and negative padding after
+    # them. The tile holds one query token, so the tile's fixed union is that token's exact fixed set.
+    route_blocks: cutlass.Constexpr[int] = 0
+    route_row: Int32 = 0
 
     @cute.jit
     def get_implicit_min_valid_blocks(self, m_block: Int32) -> Int32:
@@ -45,6 +50,14 @@ class BlockInfo:
         )
 
     @cute.jit
+    def get_route_count(self, block_index: cute.Tensor, head_idx: Int32) -> Int32:
+        """Number of routed blocks of this tile's query token (its non-negative route entries)."""
+        count = Int32(0)
+        for slot in cutlass.range_constexpr(self.route_blocks):
+            count += Int32(1) if block_index[head_idx, self.route_row, slot] >= Int32(0) else Int32(0)
+        return count
+
+    @cute.jit
     def get_n_block_idx(
         self,
         block_index: cute.Tensor,
@@ -56,15 +69,23 @@ class BlockInfo:
     ) -> Int32:
         if const_expr(self.implicit_fixed_support):
             raw_count = self.get_implicit_fixed_count(m_block)
+            if const_expr(self.route_blocks):
+                # max_i clamps a phantom index to the last real (fixed or routed) block.
+                i = cutlass.min(i, max_i)
             idx = cutlass.min(i, raw_count - 1)
             min_valid = self.get_implicit_min_valid_blocks(m_block)
             max_valid = self.get_implicit_max_valid_blocks(m_block)
             prefix_count = cutlass.min(max_valid, Int32(8))
             local_begin = cutlass.max(min_valid - 8, Int32(0))
-            return (
+            fixed_block = (
                 idx
                 if local_begin <= prefix_count or idx < prefix_count
                 else local_begin + idx - prefix_count
             )
+            if const_expr(self.route_blocks):
+                slot = cutlass.min(cutlass.max(i - raw_count, Int32(0)), Int32(self.route_blocks - 1))
+                routed_block = block_index[head_idx, self.route_row, slot]
+                return routed_block if i >= raw_count else fixed_block
+            return fixed_block
         idx = cutlass.min(i, max_i) if const_expr(max_i is not None) else i
         return block_index[batch_idx, head_idx, m_block, idx]

@@ -205,6 +205,13 @@ class _State:
 
     def run_plan(self):
         a, p = self.attention, self.index
+        if a.query_outer:
+            # The query-outer pass reads the route itself. An Index launch that merges into the compact
+            # candidate plane ([H,16:32,T], best first, -1 padding) publishes it here.
+            if not p.route_published:
+                a.tile_plan.dynamic_route.copy_(
+                    p.candidate_storage.view(torch.int32)[:, 16:32].transpose(1, 2))
+            return
         if not a.fixed_only:
             # The MBSA scorer merges all partitions before publishing these
             # IDs. The attention consumer receives one globally selected candidate
@@ -221,14 +228,13 @@ class _State:
         # CuTe launches bypass PyTorch's dispatcher. Protect every backing
         # allocation on the actual eager launch stream, including plan-owned
         # CSR/partials when a caller drops a plan with work still queued.
+        a, p = self.attention, self.index
+        current = torch.cuda.current_stream(a.q.device)
         if not torch.cuda.is_current_stream_capturing():
-            current = torch.cuda.current_stream(self.attention.q.device)
             self._record_eager_storage(current)
         self._refresh()
-        a, p = self.attention, self.index
         if a.fixed_only:
             return a.run()
-        current = torch.cuda.current_stream(a.q.device)
         if self.fixed_stream is not None and current != self.fixed_stream:
             self.inputs_ready.record(current)
             # Preserve the score-first enqueue policy; both streams join
@@ -610,6 +616,11 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         q_offset_tokens=kv_lens[0]-q_lens[0] if len(lens)==1 else tuple(kn-qn for qn,kn in lens),
         policy=policy,
     )
+    # A decode-like step (one query token per request) runs query-outer: the Index stage, then one BSA
+    # pass over each token's prefix, local and routed blocks. Its Index and attention buffers are not sized
+    # by the KV blocks of the whole batch (the FP8 K/V page conversion above still is), and there is no
+    # separate Fixed pass to overlap.
+    query_outer = max(q_lens) == 1
     if overlap_fixed_score is None:
         overlap_fixed_score = len(lens)==1 or max(kv_lens)<=8192
     # One static persistent policy for all supported OG prefill requests.
@@ -625,8 +636,10 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         compact_batch1_schedule=len(lens)==1 and max(kv_lens)>=32768,
         dynamic_route_fully_visible=fully_visible,
         dynamic_full_score_tiles=fully_visible,
-        cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k,
+        cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k, query_outer=query_outer,
     )
+    if attention.query_outer:
+        overlap_fixed_score = False
     index = prepare_index(index_q, effective_index_k, index_q_scales=index_q_scales,
         index_page_indices=index_page_indices, candidate_storage=torch.empty((4,32,q.shape[0]), dtype=torch.float32, device=q.device),
         prefix_lens=offsets, attention=attention, q_lens=q_lens, kv_lens=kv_lens,

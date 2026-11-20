@@ -28,7 +28,12 @@ class IndexDispatch:
         queued_insert: Queued Top-16 insertion on E4M3 routers.
         fp8_two_sm: E4M3 256-row tiles with the queued insertion as 2-SM CTA pairs: "0" or "auto".
         runtime_partitions: Compile the router with the KV partition count as a runtime extent, so the
-            kernel depends on the partition width and merge form, not the count (fewer kernels to warm up).
+            kernel depends on the partition width and merge form, not the count: serving warmup can then
+            compile every kernel of the dispatch. False (one kernel per count) is for comparisons only.
+        heads_in_rows: Packed steps of one-token requests (decode-like) score all Index heads of a token in
+            one CTA, so a request's Index K is read once instead of once per head; the launch takes its own
+            partition width (heads_in_rows_partition_blocks), whatever `partitions` says. False (one CTA
+            per head) is for comparisons only.
     """
 
     two_sm: str = "auto"
@@ -39,6 +44,7 @@ class IndexDispatch:
     queued_insert: bool = True
     fp8_two_sm: str = "auto"
     runtime_partitions: bool = True
+    heads_in_rows: bool = True
 
     def __post_init__(self):
         for name, allowed in (("two_sm", ("0", "1", "auto")), ("skip_fixed", ("0", "1", "auto")),
@@ -46,17 +52,17 @@ class IndexDispatch:
                               ("fp8_two_sm", ("0", "auto"))):
             if getattr(self, name) not in allowed:
                 raise ValueError(f"IndexDispatch.{name} must be one of {allowed}")
-        for name in ("parallel_insert", "queued_insert", "runtime_partitions"):
+        for name in ("parallel_insert", "queued_insert", "runtime_partitions", "heads_in_rows"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"IndexDispatch.{name} must be a bool")
 
 
 # B300 (SM103) default: each variant inside its measured faster domain (see the policies below).
 AUTO_INDEX_DISPATCH = IndexDispatch()
-# Baseline selection: Q128 with the qualified dense E4M3 Q256 rules, Lean192, PB1024 / PB2048.
+# Baseline selection: Q128 with the qualified dense E4M3 Q256 rules, Lean192, PB1024 / PB2048. Like the default
+# it takes the partition count at run time: SM100 and MBSA_INDEX_DISPATCH=baseline serve from warmed-up kernels too.
 BASELINE_INDEX_DISPATCH = IndexDispatch(two_sm="0", skip_fixed="0", partitions="0", fp8_q256="0",
-                                        parallel_insert=False, queued_insert=False, fp8_two_sm="0",
-                                        runtime_partitions=False)
+                                        parallel_insert=False, queued_insert=False, fp8_two_sm="0")
 # Per thread / task: an override in one serving thread never reaches plans bound by another.
 _dispatch_override = contextvars.ContextVar("mbsa_index_dispatch_override", default=None)
 
@@ -127,8 +133,8 @@ def _validate_index_token_extent(logical_k_tokens, partition_blocks):
         fit in signed 32-bit arithmetic. Tensor allocation and compilation may
         impose smaller practical limits.
     """
-    if partition_blocks not in (64, 128, 256, 512, 1024, 2048, 4096, 8192):
-        raise ValueError("partition_blocks must be 64, 128, 256, 512, 1024, 2048, 4096, or 8192")
+    if partition_blocks not in (16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192):
+        raise ValueError("partition_blocks must be 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, or 8192")
     limit = (1 << 31) - 128 * partition_blocks
     if not 0 < logical_k_tokens <= limit:
         raise ValueError(
@@ -380,6 +386,38 @@ FINE_PARTITION_MAX_PARTITIONS = 32
 FINE_PARTITION_MAX_EMPTY_SHARE = 0.5
 # Merges of up to SERIAL_MERGE_MAX_PARTITIONS partitions walk them serially; more take the tree merge.
 SERIAL_MERGE_MAX_PARTITIONS = 16
+# Heads-in-rows launches (IndexDispatch.heads_in_rows) run one CTA per request and KV partition, and their
+# time is the Index K read, not the UMMA: they take the widest partition width that gives every SM this many
+# CTAs, so that the launch reads K at the device's memory bandwidth. B300 (148 SMs), 32 requests: 128 CTAs
+# already do; 64 CTAs read 256K tokens per request 1.4x slower; 256 or 512 are no faster and only lengthen
+# the merge.
+HEADS_IN_ROWS_CTAS_PER_SM = 0.85
+# Their widths go below FINE_PARTITION_BLOCKS: with short KV a request has few blocks, and one CTA scanning
+# them in series is the whole launch time (about 0.36 us per block after 5 us of start-up).
+HEADS_IN_ROWS_PARTITION_BLOCKS = (1024, 512, 256, 128, 64, 32, 16)
+
+
+def heads_in_rows_partition_blocks(requests, *, sm_count=148):
+    """KV partition width of a heads-in-rows Index launch.
+
+    Args:
+        requests: Host (q_len, kv_len) pairs of the packed step.
+        sm_count: Streaming multiprocessors of the device.
+
+    Returns:
+        The widest of HEADS_IN_ROWS_PARTITION_BLOCKS whose grid (one CTA per request and partition) holds
+        HEADS_IN_ROWS_CTAS_PER_SM CTAs per SM, else the finest one with at most FINE_PARTITION_MAX_PARTITIONS
+        partitions per request. Pure host arithmetic.
+    """
+    blocks = [(kv_len + 127) // 128 for _, kv_len in requests]
+    width = 1024
+    for candidate in HEADS_IN_ROWS_PARTITION_BLOCKS:
+        if -(-max(blocks) // candidate) > FINE_PARTITION_MAX_PARTITIONS:
+            break
+        width = candidate
+        if sum(-(-count // candidate) for count in blocks) >= HEADS_IN_ROWS_CTAS_PER_SM * sm_count:
+            break
+    return width
 # Batch-one plans, and packed plans whose KV fits 8192 tokens, run Fixed attention beside the Index on a side
 # stream. A PB1024 launch that leaves SMs idle then hands them to Fixed attention, and a finer width that fills
 # them delays it: beside Fixed attention a finer width is kept only when it shortens the makespan by at least

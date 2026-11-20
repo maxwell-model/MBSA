@@ -82,22 +82,27 @@ def _local_top16_arguments(q, k, pages, scores, ids, route,
 
 
 def _packed_top16_arguments(q, k, page_indices, tile_metadata, scores, ids, route, runtime_partitions=False,
-                            outputs=None):
+                            outputs=None, route_token_mode=2):
     """Build the packed router ABI; prepared owners can retain these wrappers.
 
     outputs: (tile_metadata, scores, ids, route) wrappers of an earlier call with the same tensors, reused as is.
+    route_token_mode: the route's query-token mode: 2 for compact IDs [H,>=32,Q], 1 for a direct route [H,Q,16].
     """
     if outputs is None:
         outputs = (_dynamic(tile_metadata, 0, align=4), _partition_buffer(scores, runtime_partitions),
-                   _partition_buffer(ids, runtime_partitions), _dynamic(route, 2))
+                   _partition_buffer(ids, runtime_partitions), _dynamic(route, route_token_mode))
     return (_dynamic(q, 0), _dynamic(k, 0), _dynamic(page_indices, 0, align=4), *outputs, Int32(k.shape[0]),
             Int32(0))
 
 
 @cute.kernel
 def merge_native_top16(scores, ids, route, compact_ids: cutlass.Constexpr,
-                       runtime_partitions: cutlass.Constexpr = False):
-    """Merge native UMMA scores without reading or decoding Q/K."""
+                       runtime_partitions: cutlass.Constexpr = False, row_heads: cutlass.Constexpr = 1):
+    """Merge native UMMA scores without reading or decoding Q/K.
+
+    With row_heads > 1 a score row is one (query token, Index head) pair, row = token * row_heads + head,
+    and its merged IDs are published to route[head, token, :].
+    """
     head, tile, _ = cute.arch.block_idx()
     tid = cute.arch.thread_idx()[0]
     lane = tid % 32
@@ -133,7 +138,9 @@ def merge_native_top16(scores, ids, route, compact_ids: cutlass.Constexpr,
                     value = other_value if take else value
                     index = other_index if take else index
         if lane < 16:
-            if cutlass.const_expr(compact_ids):
+            if cutlass.const_expr(row_heads > 1):
+                route[query % row_heads, query // row_heads, lane] = index
+            elif cutlass.const_expr(compact_ids):
                 route[head, 16 + lane, query] = index
             else:
                 route[head, query, lane] = index
@@ -167,7 +174,7 @@ def _bitonic_top16_fold(value, index, lane):
 
 @cute.kernel
 def merge_native_top16_tree(scores, ids, route, compact_ids: cutlass.Constexpr,
-                            runtime_partitions: cutlass.Constexpr = False):
+                            runtime_partitions: cutlass.Constexpr = False, row_heads: cutlass.Constexpr = 1):
     """Merge many partitions of one query row with _TREE_MERGE_WAYS warps.
 
     Warp w folds partitions w, w + ways, ... with the same bitonic step as merge_native_top16; warp 0 then
@@ -215,7 +222,9 @@ def merge_native_top16_tree(scores, ids, route, compact_ids: cutlass.Constexpr,
                 index = shared_indices[other * 16 + 31 - lane]
             value, index = _bitonic_top16_fold(value, index, lane)
         if lane < 16:
-            if cutlass.const_expr(compact_ids):
+            if cutlass.const_expr(row_heads > 1):
+                route[query % row_heads, query // row_heads, lane] = index
+            elif cutlass.const_expr(compact_ids):
                 route[head, 16 + lane, query] = index
             else:
                 route[head, query, lane] = index
@@ -260,7 +269,17 @@ class IndexerLocalTop16Sm100:
         tree_merge: bool = False,
         parallel_insert: bool = False,
         queued_insert: bool = False,
+        row_heads: int = 1,
     ) -> None:
+        # Heads in rows (packed launches of one-token requests): the query operand is [tokens * row_heads, 1, 128],
+        # a tile row is one (query token, Index head) pair, row = token * row_heads + head, and one CTA scores
+        # every head of its tokens against a KV partition, which is therefore read once instead of once per head.
+        # Tile metadata counts rows; positions and candidate windows use row // row_heads. Same scores and
+        # selection per (token, head) as one CTA per head.
+        self.row_heads = int(row_heads)
+        if self.row_heads < 1 or (self.row_heads > 1 and not (
+                packed_requests and direct_route and query_tile == 128 and not two_sm and not lean192_early)):
+            raise ValueError("row_heads requires a packed Q128 launch with a direct route")
         # Queued Top-16 insertion: a candidate that beats the row's 16th entry joins a per-row queue of
         # _QUEUE_DEPTH; the warp runs the insertion network at most once per KV block, when some row's queue is
         # full, inserting every row's queue head (re-checked against the current list), and drains the queues at the
@@ -271,8 +290,8 @@ class IndexerLocalTop16Sm100:
         self.tree_merge = bool(tree_merge)
         # Top-16 insertion as one parallel compare-and-shift instead of the serial bubble.
         self.parallel_insert = bool(parallel_insert)
-        if partition_blocks not in (64, 128, 256, 512, 1024, 2048, 4096, 8192):
-            raise ValueError("partition_blocks must be 64, 128, 256, 512, 1024, 2048, 4096, or 8192")
+        if partition_blocks not in (16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192):
+            raise ValueError("partition_blocks must be 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, or 8192")
         # 2-SM UMMA (tcgen05 cta_group::2): one M=2*q_tile tile per CTA pair; each SM
         # receives only half of every K tile. Same math, per-row selection unchanged.
         self.two_sm = bool(two_sm)
@@ -457,7 +476,7 @@ class IndexerLocalTop16Sm100:
             and not self.fuse_single_partition_compact and self.tree_merge
         ):
             merge_native_top16_tree(candidate_scores, candidate_ids, route, self.compact_ids,
-                                    *((True,) if self.runtime_partitions else ())).launch(
+                                    self.runtime_partitions, self.row_heads).launch(
                 grid=(q_heads, total_q, 1), block=(32 * _TREE_MERGE_WAYS, 1, 1), stream=stream)
         if cutlass.const_expr(
             (self.compact_ids or self.direct_route)
@@ -465,7 +484,7 @@ class IndexerLocalTop16Sm100:
         ):
             merge_native_top16(
                 candidate_scores, candidate_ids, route, self.compact_ids,
-                *((True,) if self.runtime_partitions else ())
+                self.runtime_partitions, self.row_heads
             ).launch(
                 grid=(q_heads, cute.ceil_div(total_q, 4), 1),
                 block=(128, 1, 1),
@@ -529,6 +548,10 @@ class IndexerLocalTop16Sm100:
             partition_end = kv_blocks
         request_q_offset = request_k_tokens - request_q_tokens
         max_query_position = request_q_offset + q_tile_last
+        if cutlass.const_expr(self.row_heads > 1):
+            # request_q_tokens and the q_* tile bounds count rows; a query token owns row_heads of them.
+            request_q_offset = request_k_tokens - request_q_tokens // Int32(self.row_heads)
+            max_query_position = request_q_offset + q_tile_last // Int32(self.row_heads)
         max_visible_blocks = (max_query_position + Int32(self.k_tile)) // Int32(
             self.k_tile
         )
@@ -945,6 +968,8 @@ class IndexerLocalTop16Sm100:
                                     cute.arch.fence_view_async_tmem_load()
                                     acc_pipeline.consumer_release_w_index(stage)
                                 query_position = request_q_offset + q_local
+                                if cutlass.const_expr(self.row_heads > 1):
+                                    query_position = request_q_offset + q_local // Int32(self.row_heads)
                                 valid_blocks = (query_position + Int32(self.k_tile)) // Int32(
                                     self.k_tile
                                 )
@@ -1439,6 +1464,8 @@ def indexer_packed_top16(
     _runtime_partitions: bool = False,
     _prepared_args: tuple | None = None,
     _prepare_only: bool = False,
+    out_route: torch.Tensor | None = None,
+    _row_heads: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor] | tuple[Any, tuple[Any, ...]]:
     """Run one Router launch over request-local tiles in a packed Q tensor.
 
@@ -1446,7 +1473,23 @@ def indexer_packed_top16(
     request KV tokens, request partitions). With _two_sm the rows come in CTA pairs (2i, 2i+1) of the
     same request holding local tiles (2j, 2j+1); a trailing peer without rows only masks its stores.
     With _prepare_only the router is compiled but not launched, and (compiled, key) is returned.
+
+    With _row_heads = H (the Index head count; requires out_route [H,T,16]) q is the packed [T*H,1,128] view
+    of the Index queries, a tile row is one (token, head) pair and tile_metadata counts rows (q_begin and
+    q_end are multiples of H): one CTA scores all heads of its tokens, reading the request's Index K once.
+    The merge publishes each token's Top-16 block IDs, best first and -1 after them, to out_route.
     """
+    _row_heads = int(_row_heads)
+    if _row_heads != 1:
+        if (q.ndim != 3 or q.shape[1] != 1 or q.shape[0] % _row_heads or out_route is None
+                or out_compact_ids is not None or _query_tile != 128 or _two_sm or lean_pipeline):
+            raise ValueError("_row_heads requires q [T*H,1,128], out_route and the regular Q128 pipeline")
+        if (tuple(out_route.shape) != (_row_heads, q.shape[0] // _row_heads, _TOPK)
+                or out_route.dtype != torch.int32 or out_route.device != q.device
+                or not out_route.is_contiguous()):
+            raise ValueError("out_route must be contiguous CUDA int32 [H,T,16]")
+    elif out_route is not None:
+        raise ValueError("out_route requires _row_heads")
 
     if q.dtype not in (torch.bfloat16, torch.float16, torch.float8_e4m3fn) or k.dtype != q.dtype:
         raise TypeError("packed Indexer requires matching BF16, FP16 or FP8 E4M3FN Q/K")
@@ -1529,11 +1572,12 @@ def indexer_packed_top16(
             or not ids.is_contiguous()
         ):
             raise ValueError("packed candidate workspaces have invalid layout")
-        route = ids
+        route = ids if out_route is None else out_route
 
     stream = cuda.CUstream(torch.cuda.current_stream(q.device).cuda_stream)
     args = _prepared_args if _prepared_args is not None else _packed_top16_arguments(
-        q, k, page_indices, tile_metadata, scores, ids, route, _runtime_partitions)
+        q, k, page_indices, tile_metadata, scores, ids, route, _runtime_partitions,
+        route_token_mode=2 if out_route is None else 1)
     key = (
         "packed",
         q.device.index,
@@ -1577,6 +1621,8 @@ def indexer_packed_top16(
         key += ('tree_merge', True)
     if _runtime_partitions:
         key += ('runtime_partitions', True)
+    if _row_heads != 1:
+        key += ('row_heads', _row_heads)
     compiled = _COMPILE_CACHE.get(key)
     if compiled is None:
         compiled = cute.compile(
@@ -1585,7 +1631,8 @@ def indexer_packed_top16(
                 if q.dtype == torch.float8_e4m3fn
                 else (cutlass.Float16 if q.dtype == torch.float16 else cutlass.BFloat16),
                 partition_blocks=partition_blocks,
-                direct_route=False,
+                direct_route=out_route is not None,
+                row_heads=_row_heads,
                 compact_ids=compact_ids,
                 use_page_table=True,
                 packed_requests=True,

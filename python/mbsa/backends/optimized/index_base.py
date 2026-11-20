@@ -99,6 +99,11 @@ class IndexPipelineState:
     fp8_two_sm_bound: bool = False
     # Router compiled with a runtime KV partition count (IndexDispatch.runtime_partitions).
     runtime_partitions_bound: bool = False
+    # The bound Index launch writes tile_plan.dynamic_route itself (query-outer steps); otherwise the
+    # merged candidate plane is copied into it.
+    route_published: bool = False
+    # Packed launch with all Index heads of a token in one CTA bound (IndexDispatch.heads_in_rows).
+    heads_in_rows_bound: bool = False
     _lean192_early_router: bool = False
     skip_fixed_blocks_bound: bool = False
     two_sm_bound: bool = False

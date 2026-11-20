@@ -448,7 +448,8 @@ class OptimizedBackend(BackendCaseMixin, unittest.TestCase):
         index = plan.plan._state.index
         self.assertEqual(index.candidate_partition_blocks, 1024)
         self.assertIs(plan.plan.attention.fixed_tmem_load_reduce, False)
-        self.assertEqual(index._local_top16_key[-2:], ('fuse_single_partition_compact', True))
+        self.assertEqual(index._local_top16_key[-4:],
+                         ('fuse_single_partition_compact', True, 'runtime_partitions', True))
         expected = reference_pipeline(*operands)
         baseline = tuple(t.clone() for t in plan.run())
         self.compare(baseline, expected)

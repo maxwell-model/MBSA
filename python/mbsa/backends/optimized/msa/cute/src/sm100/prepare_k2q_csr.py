@@ -23,27 +23,17 @@ _SUPPORTED_TOPK = (4, 8, 16, 32)
 # The CUDA pipeline templates on blk_kv and only uses it for
 # per-batch row-count arithmetic, so 32/64 are exact -- not an approximation.
 _SUPPORTED_BLK_KV = (32, 64, 128)
-#: The histogram stage keeps one packed int16 counter per CSR row per warp in
-#: shared memory (2 bytes per row). Halving blk_kv doubles the row count, so a
-#: config that fits at 128 can fail at 64 -- and it fails as a bare
-#: cudaErrorInvalidValue. Catch it here, where the numbers can be explained.
-_CSR_SMEM_BYTES_PER_ROW = 2
+#: The histogram and scatter stages keep one packed int16 counter per CSR row per warp in
+#: shared memory (2 bytes per row). A batch with more rows than one CTA's 227 KB hold is
+#: split into equal row ranges, one grid row of CTAs each (kMaxRangeRows in
+#: build_k2q_csr.cu), so the CSR has no row limit.
+_CSR_MAX_RANGE_ROWS = 116224
 
 
-def _check_csr_smem_budget(total_rows: int, device) -> None:
-    if total_rows <= 0:
-        return
-    try:
-        limit = torch.cuda.get_device_properties(device).shared_memory_per_block_optin
-    except (AttributeError, RuntimeError):
-        limit = 227 * 1024
-    needed = total_rows * _CSR_SMEM_BYTES_PER_ROW
-    if needed <= limit:
-        return
-    raise ValueError(
-        f"build_k2q_csr needs {needed / 1024:.0f} KB of shared memory for its row "
-        f"histogram ({total_rows} CSR rows x {_CSR_SMEM_BYTES_PER_ROW} B), above this "
-        f"device's {limit / 1024:.0f} KB per-CTA limit. Use a larger blk_kv.")
+def _csr_range_rows(total_rows: int) -> int:
+    """Rows per histogram/scatter CTA: mirrors the native row-range split."""
+    ranges = max(1, _ceil_div(total_rows, _CSR_MAX_RANGE_ROWS))
+    return _ceil_div(total_rows, ranges)
 
 
 def _ceil_div(x: int, y: int) -> int:
@@ -54,7 +44,7 @@ def _scratch_geometry(
     total_q: int, total_rows: int, device, min_q_per_cta: int = 256
 ) -> tuple[int, int]:
     """Mirror the native launch geometry used to size caller-owned scratch."""
-    per_warp_smem = ((total_rows + 1) >> 1) * 4
+    per_warp_smem = ((_csr_range_rows(total_rows) + 1) >> 1) * 4
     warps = 4
     while warps > 1 and (warps * per_warp_smem) * 2 > 228 * 1024:
         warps >>= 1
@@ -272,7 +262,6 @@ class SparseK2qCsrBuilderSm100:
         if total_rows < 0:
             raise ValueError(f"total_rows must be non-negative, got {total_rows}")
         total_rows = max(total_rows, 0)
-        _check_csr_smem_budget(total_rows, q2k_indices.device)
         nnz_upper_bound = total_q * topk
         qhead_per_kv = int(qhead_per_kv)
         if qhead_per_kv <= 0:
