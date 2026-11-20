@@ -6,6 +6,26 @@ import itertools
 import torch
 
 
+def index_dispatch(**modes):
+    """Context manager binding optimized Index plans with `modes` (IndexDispatch fields).
+
+    Unnamed fields keep the enclosing index_dispatch block's value, else the baseline selection with
+    runtime partition counts (how the default dispatch compiles its kernels). Plans prepared or rebound
+    inside the block use it on any device, independently of MBSA_INDEX_DISPATCH.
+    """
+    import dataclasses
+    from mbsa.backends.optimized import index_policy
+    base = index_policy.index_dispatch_request()[0] or dataclasses.replace(
+        index_policy.BASELINE_INDEX_DISPATCH, runtime_partitions=True)
+    return index_policy.index_dispatch_override(dataclasses.replace(base, **modes))
+
+
+def baseline_index_dispatch():
+    """Context manager binding optimized Index plans with the baseline selection."""
+    from mbsa.backends.optimized import index_policy
+    return index_policy.index_dispatch_override(index_policy.BASELINE_INDEX_DISPATCH)
+
+
 def make_inputs(case, mapping):
     requests = case["requests"]
     q_lens, k_lens = ([r[name] for r in requests] for name in ("q", "kv"))

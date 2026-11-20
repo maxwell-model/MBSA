@@ -1,13 +1,17 @@
 # Public Fireworks KV-outer provenance
 
+This record covers `mbsa.cute.kvouter`, used by the default backend. Its public
+source and separate-state descriptions do not cover the separately imported
+[optimized backend](../../backends/optimized/PROVENANCE.md). No global
+clean-room assertion is made for the combined repository.
+
 Public repository: <https://github.com/MiniMax-AI/MSA/tree/fireworks-msa>.
 Pinned commit: `e68899832e125f519d913a49e24571b38146d82b`.
 
 The four KV-outer source modules under `mbsa.cute.kvouter` are copied directly
 from this public commit's `python/fmha_sm100/kvouter/` directory. Their original
 copyright and SPDX headers remain. [UPSTREAM.json](UPSTREAM.json) records source
-Git blob IDs, source SHA-256 and resulting local SHA-256. No implementation body
-is copied from any non-public delivery branch.
+Git blob IDs, source SHA-256 and resulting local SHA-256.
 
 The index and schedule are Apache-2.0 Fireworks AI code. The forward and combine
 retain `BSD-3-Clause AND Apache-2.0`: portions derive from FlashAttention-4
@@ -33,9 +37,9 @@ MBSA adaptations:
 - The MBSA pipeline passes the public `q_load_stage=3` parameter when the device
   capability is SM103 `(10, 3)` and partial storage is BF16. Other devices or
   partial types pass `None` and retain the upstream architecture defaults.
-  This choice comes from independent measurements and changes the
+  This choice comes from independent B300 measurements and changes the
   preparation call only; the four public source modules are unchanged by this
-  tuning. It does not reuse V2/V3 context-range dispatch or tuning code.
+  tuning.
 - The installed CUTLASS 4.6 MMA helper receives separate A/B dtype arguments.
   The legacy `cute.core.ThrMma` type annotation uses `cute.ThrMma`; deprecated
   `cute.make_fragment` register tensors use `cute.make_rmem_tensor`.

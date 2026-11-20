@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 """SM100/SM103 BF16/FP16/FP8 router with native TMA/UMMA and exact Top-16 merge."""
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import cutlass.utils as utils
 import cutlass.utils.blackwell_helpers as sm100_utils
 import torch
 from cutlass import Float32, Int32
+from cutlass.base_dsl.arch import Arch
+from cutlass.base_dsl.dsl import BaseDSL
 from cutlass.cute.nvgpu import cpasync, tcgen05
 from cutlass.cute.runtime import from_dlpack
 
@@ -117,6 +120,7 @@ class IndexerLocalTop16Sm100:
         if partition_blocks not in (1024, 2048, 4096, 8192):
             raise ValueError("partition_blocks must be 1024, 2048, 4096, or 8192")
         self.partition_blocks = int(partition_blocks)
+        self.use_load_reduce = BaseDSL._get_dsl().get_arch_enum().is_family_of(Arch.sm_103f)
         self.input_dtype = input_dtype
         self.direct_route = bool(direct_route)
         self.compact_ids = bool(compact_ids)
@@ -128,7 +132,7 @@ class IndexerLocalTop16Sm100:
         reduced_footprint = lean_pipeline or reduced_acc_pipeline
         self.acc_stages = 2 if reduced_footprint else 3
         self.tmem_columns = 256 if reduced_footprint else 512
-        self.lean192_early = bool(lean192_early)
+        self.lean192_early = bool(lean192_early and self.use_load_reduce)
         if self.lean192_early:
             if packed_requests or input_dtype != cutlass.BFloat16 or partition_blocks != 1024:
                 raise ValueError("lean192_early requires nonpacked BF16 PB1024")
@@ -508,14 +512,15 @@ class IndexerLocalTop16Sm100:
                     registers = cute.make_rmem_tensor(thread_coords.shape, Float32)
                     row_reduced = cute.make_rmem_tensor((1,), Float32)
                 else:
-                    load_atom = cute.make_copy_atom(
-                        tcgen05.LdRed32x32bOp(
-                            tcgen05.Repetition.x128,
-                            tcgen05.Pack.NONE,
-                            tcgen05.TmemLoadRedOp.MAX,
-                        ),
-                        Float32,
-                    )
+                    # SM100 has no load-reduce instruction. Preserve the same
+                    # row maximum by loading and reducing its FP32 registers.
+                    if cutlass.const_expr(self.use_load_reduce):
+                        load_op = tcgen05.LdRed32x32bOp(
+                            tcgen05.Repetition.x128, tcgen05.Pack.NONE,
+                            tcgen05.TmemLoadRedOp.MAX)
+                    else:
+                        load_op = tcgen05.Ld32x32bOp(tcgen05.Repetition.x128, tcgen05.Pack.NONE)
+                    load_atom = cute.make_copy_atom(load_op, Float32)
                     tiled_t2r = tcgen05.make_tmem_copy(load_atom, tCtAcc[(None, None, None, 0)])
                     copy_thread = tiled_t2r.get_slice(epi_tidx)
                     thread_tmem = copy_thread.partition_S(tCtAcc)
@@ -550,12 +555,22 @@ class IndexerLocalTop16Sm100:
                                 # Stage release remains below, after every chunk has loaded.
                                 cute.arch.fence_view_async_tmem_load()
                         else:
-                            cute.copy(
-                                tiled_t2r,
-                                thread_tmem[(None, None, None, None, stage)],
-                                [registers, row_reduced],
-                            )
-                            row_max = row_reduced[0]
+                            if cutlass.const_expr(self.use_load_reduce):
+                                cute.copy(
+                                    tiled_t2r,
+                                    thread_tmem[(None, None, None, None, stage)],
+                                    [registers, row_reduced],
+                                )
+                                row_max = row_reduced[0]
+                            else:
+                                cute.copy(tiled_t2r,
+                                          thread_tmem[(None, None, None, None, stage)], registers)
+                                cute.arch.fence_view_async_tmem_load()
+                                values = cute.make_tensor(registers.iterator,
+                                                          cute.make_layout(cute.size(registers)))
+                                row_max = values[0]
+                                for column in cutlass.range_constexpr(1, cute.size(values)):
+                                    row_max = cute.arch.fmax(row_max, values[column])
                         query_position = request_q_offset + q_local
                         valid_blocks = (query_position + Int32(self.k_tile)) // Int32(
                             self.k_tile

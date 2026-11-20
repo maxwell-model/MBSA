@@ -1,5 +1,12 @@
 # KV FP8 validation — 2026-10-10
 
+This historical report concerns the default Blackwell FA4/Fireworks backend,
+not `backend="optimized"`. Its native FP8 arithmetic and PTX observations do
+not apply to the optimized backend, which converts FP8 attention operands to
+BF16. Nor does this report qualify the experimental NVFP4 path. The recorded
+results below are preserved rather than presented as a fresh run of the
+current tree; see [validation scope](validation.md).
+
 Validation ran in a controlled environment with Python 3.12.14,
 PyTorch 2.11.0+cu130, Triton 3.6.0 and CUTLASS DSL 4.6.0.
 E4M3FN K/V use unit-scale represented values. BF16 Q is converted into a

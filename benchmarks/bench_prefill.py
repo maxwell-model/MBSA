@@ -3,8 +3,9 @@
 """Measure the MBSA prefill pipeline and FA4 dense GQA.
 Sparse totals sum chunk medians.
 Preparation, compilation, projections and cache writes are excluded.
-FP8 KV: native FP8 QK/PV with timed Q conversion; baselines use represented
-Q/K/V decoded to BF16 before timing, not native FP8 baseline kernels."""
+FP8 KV: default uses native FP8 QK/PV with timed Q conversion; optimized
+decodes FP8 K/V to BF16 each run. Dense baselines use the corresponding
+represented operands decoded to BF16, not native FP8 baseline kernels."""
 
 from __future__ import annotations
 
@@ -23,6 +24,10 @@ sys.path.insert(0, str(ROOT))
 
 def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--backend', choices=('default', 'optimized'), default='default',
+                        help='explicit MBSA backend; default selection is unchanged')
+    parser.add_argument('--lean192', choices=('auto', 'on', 'off'), default='auto',
+                        help='optimized BF16 Index policy; actual per-chunk selection is recorded')
     parser.add_argument("--lengths", default="32768,65536,131072,262144,524288,1048576")
     parser.add_argument("--chunk", type=int, default=8192)
     parser.add_argument("--warmups", type=int, default=2)
@@ -35,7 +40,7 @@ def arguments():
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument(
         "--kv-dtype", choices=("bf16", "fp8"), default="bf16",
-        help="main KV precision; fp8 is E4M3FN, BF16 Q converts inside the timed MBSA run; baselines use decoded represented BF16 Q/K/V",
+        help="KV precision; default fp8 casts Q and uses FP8 attention, optimized decodes K/V and uses BF16 attention",
     )
     parser.add_argument(
         "--index-dtype", choices=("bf16", "fp16", "fp8"), default="fp8",
@@ -69,6 +74,10 @@ def arguments():
         help="measure dense GQA first; use --resume later to add sparse timings",
     )
     args = parser.parse_args()
+    if args.lean192 != 'auto' and args.backend != 'optimized':
+        parser.error('--lean192 on/off requires --backend optimized')
+    if args.lean192 == 'on' and (args.index_dtype != 'bf16' or args.kv_dtype != 'bf16'):
+        parser.error('--lean192 on requires BF16 Index and BF16 attention')
     if args.input is not None:
         if args.resume or args.dense_only or args.plot is not None or args.no_plot:
             parser.error(
@@ -122,6 +131,9 @@ def measure(torch, fn, flush, warmups, samples):
     for _ in range(samples):
         if flush is not None:
             flush.add_(1)
+            # Drain only the cache-flush work before starting an eager sample;
+            # otherwise its queued latency can hide CPU kernel-enqueue gaps.
+            torch.cuda.current_stream().synchronize()
         start, end = (
             torch.cuda.Event(enable_timing=True),
             torch.cuda.Event(enable_timing=True),
@@ -168,6 +180,10 @@ def run(args):
     }
     contract = {
         "gpu": torch.cuda.get_device_name(),
+        "backend": args.backend,
+        "lean192_requested": args.lean192,
+        "lean192_resolved_location": "chunks[].lean192_enabled",
+        "measurement_scope": "sum_of_independently_measured_chunk_medians",
         "gpu_uuid": str(torch.cuda.get_device_properties(0).uuid),
         "capability": list(capability),
         "torch": str(torch.__version__),
@@ -184,11 +200,11 @@ def run(args):
         "dtype": "bf16",
         "kv_dtype": args.kv_dtype,
         "output_dtype": "bf16",
-        "attention_compute_dtype": args.kv_dtype,
+        "attention_compute_dtype": 'bf16' if args.backend == 'optimized' else args.kv_dtype,
         "kv_quantization": "BF16 cast to E4M3FN; no scale; excluded from timing" if args.kv_dtype == "fp8" else "none",
-        "query_quantization": "BF16 to E4M3FN inside each timed MBSA run" if args.kv_dtype == "fp8" else "none",
+        "query_quantization": "BF16 to E4M3FN inside each timed MBSA run" if args.kv_dtype == "fp8" and args.backend == 'default' else "none",
         "baseline_dtype": "bf16",
-        "baseline_representation": "FP8 Q/K/V decoded exactly to BF16 before timing; BF16 attention baseline, not native FP8" if args.kv_dtype == "fp8" else "original BF16 Q/K/V",
+        "baseline_representation": ("represented Q/K/V decoded to BF16 before timing; BF16 attention baseline, not native FP8" if args.kv_dtype == "fp8" else "original BF16 Q/K/V"),
         "index_dtype": args.index_dtype,
         "score_dtype": "fp32",
         "index_quantization": "none" if args.index_dtype == "bf16" else f"BF16 cast to {args.index_dtype}; no scale; excluded from timing",
@@ -216,6 +232,9 @@ def run(args):
             raise ValueError("resume GPU, source, or benchmark settings differ")
         result["contract"] = contract
     result["status"] = "running"
+    print(json.dumps({"backend": args.backend, "lean192_requested": args.lean192,
+                      "measurement_scope": contract["measurement_scope"],
+                      "l2": args.l2}), flush=True)
     save(args.output, result)
     longest = max(args.lengths)
     generator = torch.Generator(device="cuda").manual_seed(args.seed)
@@ -235,7 +254,8 @@ def run(args):
     # for MBSA so its per-run conversion remains part of the measured pipeline.
     if args.kv_dtype == "fp8":
         k, v = k.to(torch.float8_e4m3fn), v.to(torch.float8_e4m3fn)
-        baseline_q = q.to(torch.float8_e4m3fn).to(torch.bfloat16)
+        baseline_q = (q.to(torch.float8_e4m3fn).to(torch.bfloat16)
+                      if args.backend == 'default' else q)
         baseline_k, baseline_v = k.to(torch.bfloat16), v.to(torch.bfloat16)
     else:
         baseline_q, baseline_k, baseline_v = q, k, v
@@ -282,11 +302,18 @@ def run(args):
                 k[:end],
                 v[:end],
                 partial_dtype=torch.bfloat16,
+                backend=args.backend,
+                lean192=args.lean192,
             )
             output, lse, remote = pipeline.run()
+            if pipeline.backend != args.backend:
+                raise AssertionError('resolved backend differs from the requested benchmark backend')
             if output.dtype != torch.bfloat16:
                 raise AssertionError("MBSA prefill benchmark requires BF16 output")
-            entry = {"chunk": chunk, "kv": end}
+            entry = {"chunk": chunk, "kv": end, "lean192_requested": pipeline.lean192,
+                     "lean192_enabled": pipeline.lean192_enabled}
+            print(json.dumps({k: entry[k] for k in
+                ("chunk", "kv", "lean192_requested", "lean192_enabled")}), flush=True)
             if chunk == 0 or end in args.lengths:
                 probe = slice(args.chunk - 16, args.chunk)
                 eo, el, er = reference_pipeline(

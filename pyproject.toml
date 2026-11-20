@@ -25,7 +25,14 @@ license-files = ["LICENSE", "NOTICE"]
 where = ["python"]
 
 [tool.setuptools.package-data]
-mbsa = ["third_party/**/LICENSE", "third_party/**/NOTICE", "third_party/**/AUTHORS", "third_party/**/*.md", "third_party/**/*.json", "mxfp6/csrc/*.cu", "mxfp6/csrc/*.cuh"]
+mbsa = [
+    "third_party/**/LICENSE", "third_party/**/NOTICE", "third_party/**/AUTHORS",
+    "third_party/**/*.md", "third_party/**/*.json",
+    "backends/optimized/UPSTREAM.json", "backends/optimized/*.md",
+    "backends/optimized/licenses/*.txt", "backends/optimized/**/*.cu",
+    "backends/optimized/**/*.h", "backends/optimized/**/*.cuh",
+    "mxfp6/csrc/*.cu", "mxfp6/csrc/*.cuh",
+]
 
 [tool.ruff.lint]
 select = ["F"]
@@ -38,3 +45,12 @@ select = ["F"]
 "python/mbsa/cute/kvouter/sparse_fwd_kvouter.py" = ["F841"]
 "python/mbsa/cute/kvouter/sparse_fwd_kvouter_combine.py" = ["F401"]
 "python/mbsa/cute/kvouter/sparse_fwd_kvouter_load_balance_schedule.py" = ["F401"]
+"python/mbsa/backends/optimized/src/common/**" = ["F401", "F841"]
+"python/mbsa/backends/optimized/src/sm100/**" = ["F841"]
+# Preserve imported vendor DSL expressions and compatibility re-exports.
+"python/mbsa/backends/optimized/bsa/cute_dsl/sparse/sm100_blk128/flash_fwd_sm100.py" = ["F841"]
+"python/mbsa/backends/optimized/kernels/attention.py" = ["F401"]
+"python/mbsa/backends/optimized/kernels/msa_block_sparse/_vllm_compat.py" = ["F401"]
+"python/mbsa/backends/optimized/msa/cute/src/common/blackwell_helpers.py" = ["F841"]
+"python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/atten_fwd_nvfp4_kv.py" = ["F841"]
+"python/mbsa/backends/optimized/msa/cute/src/sm100/fwd/combine.py" = ["F841"]
