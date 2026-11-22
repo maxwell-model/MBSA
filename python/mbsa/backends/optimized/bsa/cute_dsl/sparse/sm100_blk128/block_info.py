@@ -21,6 +21,9 @@ class BlockInfo:
     # them. The tile holds one query token, so the tile's fixed union is that token's exact fixed set.
     route_blocks: cutlass.Constexpr[int] = 0
     route_row: Int32 = 0
+    # Split tiles: this split takes entries split_idx, split_idx + num_splits, ... of the tile's block list.
+    num_splits: cutlass.Constexpr[int] = 1
+    split_idx: Int32 = 0
 
     @cute.jit
     def get_implicit_min_valid_blocks(self, m_block: Int32) -> Int32:
@@ -72,6 +75,8 @@ class BlockInfo:
             if const_expr(self.route_blocks):
                 # max_i clamps a phantom index to the last real (fixed or routed) block.
                 i = cutlass.min(i, max_i)
+                if const_expr(self.num_splits > 1):
+                    i = i * Int32(self.num_splits) + self.split_idx
             idx = cutlass.min(i, raw_count - 1)
             min_valid = self.get_implicit_min_valid_blocks(m_block)
             max_valid = self.get_implicit_max_valid_blocks(m_block)
@@ -85,6 +90,9 @@ class BlockInfo:
             if const_expr(self.route_blocks):
                 slot = cutlass.min(cutlass.max(i - raw_count, Int32(0)), Int32(self.route_blocks - 1))
                 routed_block = block_index[head_idx, self.route_row, slot]
+                if const_expr(self.num_splits > 1):
+                    # A split past the list lands on route padding: it repeats a fixed block instead.
+                    return routed_block if (i >= raw_count and routed_block >= Int32(0)) else fixed_block
                 return routed_block if i >= raw_count else fixed_block
             return fixed_block
         idx = cutlass.min(i, max_i) if const_expr(max_i is not None) else i

@@ -19,9 +19,7 @@ import torch
 
 from mbsa import prepare_cutedsl_pipeline
 from mbsa.backends.optimized.index_policy import (AUTO_INDEX_DISPATCH, BASELINE_INDEX_DISPATCH,
-                                                  FINE_PARTITION_MAX_PARTITIONS, HEADS_IN_ROWS_CTAS_PER_SM,
-                                                  SERIAL_MERGE_MAX_PARTITIONS, heads_in_rows_partition_blocks,
-                                                  index_dispatch_override)
+                                                  SERIAL_MERGE_MAX_PARTITIONS, index_dispatch_override)
 from tests.common import BackendCaseMixin, baseline_index_dispatch
 from tests.reference import reference_pipeline
 
@@ -134,13 +132,14 @@ class DecodeSteps(BackendCaseMixin, unittest.TestCase):
                      decode_reference(inputs, rows, kv_lens, checked, q_lens))
 
     def test_batch_one_and_fixed_only_steps(self):
-        # One request binds the batch-one Index launch; up to 2048 KV tokens there is no Dynamic stage.
+        # One request takes the same heads-in-rows launch as a batch; up to 2048 KV tokens there is no
+        # Dynamic stage.
         for kv in (2048, 2049, 4096, 70000):
             with self.subTest(kv=kv):
                 pipeline, inputs, _, rows = self.run_step((kv,))
                 state = pipeline.plan._state
                 self.assertEqual(state.attention.query_outer, kv > 2048)
-                self.assertFalse(state.index.heads_in_rows_bound)
+                self.assertEqual(state.index.heads_in_rows_bound, kv > 2048)
                 self.compare(pipeline.run(), decode_reference(inputs, rows, (kv,)))
         pipeline, inputs, _, rows = self.run_step((1024, 2048, 300))
         self.assertFalse(pipeline.plan._state.attention.query_outer)
@@ -202,8 +201,8 @@ class DecodeSteps(BackendCaseMixin, unittest.TestCase):
 
     def test_heads_in_rows_is_bit_identical_to_one_cta_per_head(self):
         # The default dispatch and the baseline selection (FP16 Index always binds it). Serial merges (up to 16
-        # partitions) and tree merges: the ragged step binds 32 partitions of 32 blocks for its longest request,
-        # two requests of 1M tokens 32 partitions of 256 blocks (the partition cap).
+        # partitions per request) and tree merges: the ragged step gives its longest request more than 16 of
+        # its work rows, two requests of 1M tokens 63 each.
         cases = [(AUTO_INDEX_DISPATCH, dtype, kv_lens, tree)
                  for dtype in (torch.bfloat16, E4M3)
                  for kv_lens, tree in ((RAGGED, True), ((8192,) * 32, False), ((262144,) * 32, False),
@@ -225,17 +224,6 @@ class DecodeSteps(BackendCaseMixin, unittest.TestCase):
                         results.append(tuple(t.clone() for t in pipeline.run()))
                 for name, a, b in zip(("out", "lse", "route"), *results):
                     self.assertTrue(torch.equal(a, b), name)
-
-    def test_partition_width_keeps_every_sm_streaming(self):
-        for requests, expected in ((((1, 8192),) * 32, 16), (((1, 16384),) * 32, 32), (((1, 32768),) * 32, 64),
-                                   (((1, 131072),) * 32, 256), (((1, 262144),) * 32, 512),
-                                   (((1, 1048576),) * 32, 1024), (((1, 1048576),) * 2, 256), (((1, 4096),), 16)):
-            width = heads_in_rows_partition_blocks(requests, sm_count=148)
-            self.assertEqual(width, expected, requests[:1])
-            blocks = [(kv + 127) // 128 for _, kv in requests]
-            self.assertLessEqual(-(-max(blocks) // width), FINE_PARTITION_MAX_PARTITIONS)
-            if width < 1024 and width > 16:
-                self.assertLess(sum(-(-b // (2 * width)) for b in blocks), HEADS_IN_ROWS_CTAS_PER_SM * 148)
 
     def test_mega_graph_and_rebind(self):
         kv_lens = (4096, 33000, 131072, 2304)

@@ -202,6 +202,12 @@ class Limits:
         return total
 
 
+# Bounds of the decode-like path for devices of up to 300 SMs (index_policy.heads_in_rows_work_rows gives a
+# launch fewer than 0.85 * SMs rows beyond its requests; attention.query_outer_splits at most SMs / 4 states).
+DECODE_INDEX_ROWS = 256
+DECODE_SPLIT_STATES = 256
+
+
 def _optimized_extra_bytes(limits: Limits, tokens: int, rows: int, partitions: int,
                            kv_dtype: torch.dtype) -> int:
     """Optimized-backend buffers beyond the default estimate.
@@ -209,6 +215,7 @@ def _optimized_extra_bytes(limits: Limits, tokens: int, rows: int, partitions: i
     ``rows`` bounds the step's logical KV pages, pieces included."""
     from .backends.optimized.index_policy import FINE_PARTITION_MAX_PARTITIONS
 
+    decode_requests = min(tokens, limits.max_requests)
     extra = (
         # Index partition scores and IDs beyond the prepared count (finer dispatch widths, MX routers).
         2 * KV_HEADS * max(0, FINE_PARTITION_MAX_PARTITIONS - partitions) * DYNAMIC_PAGES * 4 * tokens
@@ -216,6 +223,12 @@ def _optimized_extra_bytes(limits: Limits, tokens: int, rows: int, partitions: i
         + tokens * (KV_HEADS * Q_HEADS * 4 + KV_HEADS * DYNAMIC_PAGES * 4)
         # CSR histogram scratch: at most 4 warps per 128-query CTA group.
         + 4 * KV_HEADS * 4 * _ceil_div(tokens, 128) * rows
+        # Decode-like steps: the partition buffers of a heads-in-rows Index launch (fewer than
+        # DECODE_INDEX_ROWS requests share that many spare rows, so no request owns more partitions; a larger
+        # batch has one each) and the split attention states (at most DECODE_SPLIT_STATES per step).
+        + 2 * KV_HEADS * DYNAMIC_PAGES * 4 * (
+            min(decode_requests, DECODE_INDEX_ROWS) * DECODE_INDEX_ROWS + decode_requests)
+        + DECODE_SPLIT_STATES * Q_HEADS * (HEAD_DIM * 2 + 4)
     )
     if kv_dtype == torch.float8_e4m3fn:
         # BF16 copies of FP8 Q and of every piece's logical K/V pages. A request with
@@ -528,7 +541,11 @@ def warmup_request_sets(
     sets += [((q_len, 2560),) for q_len in (160, 320)]
     # One-token requests (decode-like steps): the optimized backend runs them query-outer, in one
     # attention pass over fixed and routed blocks; a packed step binds its own Index launch.
-    sets += [((1, 4096),), ((1, 4096), (1, 4096))]
+    # A batch that leaves SMs without an attention tile splits its tiles, into a power of two that halves
+    # as the batch doubles: the powers of two and the largest batch reach every split count (and its
+    # combine kernel) and, when the limits allow such a batch, the unsplit pass.
+    largest = min(limits.max_requests, 64)
+    sets += [((1, 4096),) * batch for batch in sorted({1, 2, 4, 8, 16, 32, 64, largest}) if batch <= largest]
     if index_format == "mxfp6":
         # The MXFP6 router partitions every 256 pages, for any batch.
         sets += [((16, 32768 * p + PAGE_SIZE),) for p in range(1, 32)]
@@ -686,6 +703,7 @@ def compiled_kernel_count() -> int:
 
 
 __all__ = [
+    "KvLengths",
     "INDEX_FORMATS",
     "Limits",
     "PrefillStep",
@@ -697,3 +715,11 @@ __all__ = [
     "warmup",
     "warmup_request_sets",
 ]
+
+
+def __getattr__(name: str):
+    """KvLengths: the run-time KV lengths of decode-like steps on the optimized backend, loaded on first use."""
+    if name == "KvLengths":
+        from .backends.optimized.kv_lengths import KvLengths
+        return KvLengths
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

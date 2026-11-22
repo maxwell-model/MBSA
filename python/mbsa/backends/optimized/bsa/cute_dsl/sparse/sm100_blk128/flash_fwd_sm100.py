@@ -139,8 +139,18 @@ class FlashAttentionForwardSm100:
         grouped_output: bool = False,
         is_varlen: bool = False,
         implicit_fixed_route_blocks: int = 0,
+        num_splits: int = 1,
+        split_heads: int = 0,
     ):
         self.is_varlen = is_varlen
+        # Split tiles (routed one-token tiles only): the scheduler's head axis holds num_splits * split_heads
+        # entries, (split, head). Split s of a tile takes blocks s, s + num_splits, ... of the tile's block
+        # list and writes its state to output row q * num_splits + s; a split past the list repeats one block
+        # and is dropped by the consumer that combines the states (kernels/attention.py).
+        self.num_splits = int(num_splits)
+        self.split_heads = int(split_heads)
+        if self.num_splits < 1 or (self.num_splits > 1 and not (implicit_fixed_route_blocks and split_heads > 0)):
+            raise ValueError("split tiles require routed blocks and the head count of the scheduler axis")
         # Implicit fixed blocks plus up to this many routed blocks per one-token packed tile (BlockInfo).
         self.route_blocks = int(implicit_fixed_route_blocks)
         if self.route_blocks and not (implicit_fixed_support and is_varlen and is_causal):
@@ -408,8 +418,14 @@ class FlashAttentionForwardSm100:
     ) -> Int32:
         if const_expr(self.implicit_fixed_support):
             if const_expr(self.route_blocks):
-                return block_info.get_implicit_fixed_count(m_block) + block_info.get_route_count(
+                total = block_info.get_implicit_fixed_count(m_block) + block_info.get_route_count(
                     mBlockIndex, head_idx)
+                if const_expr(self.num_splits > 1):
+                    # Blocks split_idx, split_idx + num_splits, ... of the list; never zero (see BlockInfo).
+                    return cutlass.max(
+                        (total - block_info.split_idx + Int32(self.num_splits - 1)) // Int32(self.num_splits),
+                        Int32(1))
+                return total
             return block_info.get_implicit_fixed_count(m_block)
         if const_expr(mBlockNums is not None):
             return mBlockNums[batch_idx, head_idx, m_block]
@@ -735,7 +751,7 @@ class FlashAttentionForwardSm100:
             TileScheduler = StaticPersistentTileScheduler
         tile_sched_args = TileSchedulerArguments(
             mPackedTiles.shape[0] if const_expr(self.is_varlen) else cute.ceil_div(cute.size(mQ.shape[0]), self.cta_tiler[0]),
-            cute.size(mQ.shape[2]),
+            cute.size(mQ.shape[2]) * self.num_splits,
             cute.size(mQ.shape[3]),
             num_splits,
             logical_seqlen_k,
@@ -850,6 +866,8 @@ class FlashAttentionForwardSm100:
             else None,
             stream=stream,
             min_blocks_per_mp=1,
+            # The routed pass follows the kernel that publishes its route: a dependent launch.
+            **(dict(use_pdl=True) if self.route_blocks else {}),
         )
 
     #  GPU device kernel
@@ -912,6 +930,8 @@ class FlashAttentionForwardSm100:
         cta_layout_vmnk = cute.tiled_divide(
             cute.make_layout(self.cluster_shape_mnk), (tiled_mma_qk.thr_id.shape,)
         )
+        if const_expr(self.route_blocks):
+            cute.arch.griddepcontrol_wait()
         # Setup cta/thread coordinates
         bidx, _, _ = cute.arch.block_idx()
         if const_expr(cute.size(tiled_mma_qk.thr_id.shape) == 1):
@@ -1441,6 +1461,9 @@ class FlashAttentionForwardSm100:
         work_tile = tile_scheduler.initial_work_tile_info()
         while work_tile.is_valid_tile:
             m_block, head_idx, batch_idx, split_idx = work_tile.tile_idx
+            if const_expr(self.num_splits > 1):
+                split_idx = head_idx // Int32(self.split_heads)
+                head_idx = head_idx % Int32(self.split_heads)
             seqlen = SeqlenInfoCls(m_block, batch_idx)
             m_block, batch_idx = seqlen.m_block, seqlen.batch_idx
             if const_expr(self.is_varlen):
@@ -1450,6 +1473,7 @@ class FlashAttentionForwardSm100:
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
                     self.route_blocks, seqlen.offset_q,
+                    self.num_splits, split_idx,
                 )
             mQ_cur = mQ[None, None, head_idx, seqlen.tensor_batch_idx]
             if const_expr(self.is_varlen):
@@ -1761,6 +1785,9 @@ class FlashAttentionForwardSm100:
         work_tile = tile_scheduler.initial_work_tile_info()
         while work_tile.is_valid_tile:
             m_block, head_idx, batch_idx, split_idx = work_tile.tile_idx
+            if const_expr(self.num_splits > 1):
+                split_idx = head_idx // Int32(self.split_heads)
+                head_idx = head_idx % Int32(self.split_heads)
             seqlen = SeqlenInfoCls(m_block, batch_idx)
             m_block, batch_idx = seqlen.m_block, seqlen.batch_idx
             if const_expr(self.is_varlen):
@@ -1770,6 +1797,7 @@ class FlashAttentionForwardSm100:
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
                     self.route_blocks, seqlen.offset_q,
+                    self.num_splits, split_idx,
                 )
 
             raw_block_count = self.get_block_count(
@@ -2051,6 +2079,9 @@ class FlashAttentionForwardSm100:
         )
         while work_tile.is_valid_tile:
             m_block, head_idx, batch_idx, split_idx = work_tile.tile_idx
+            if const_expr(self.num_splits > 1):
+                split_idx = head_idx // Int32(self.split_heads)
+                head_idx = head_idx % Int32(self.split_heads)
             seqlen = SeqlenInfoCls(m_block, batch_idx)
             m_block, batch_idx = seqlen.m_block, seqlen.batch_idx
             if const_expr(self.is_varlen):
@@ -2060,6 +2091,7 @@ class FlashAttentionForwardSm100:
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
                     self.route_blocks, seqlen.offset_q,
+                    self.num_splits, split_idx,
                 )
 
             # n_block(i): maps logical index i to actual KV block index via q2k_block_index
@@ -2493,6 +2525,9 @@ class FlashAttentionForwardSm100:
         work_tile = tile_scheduler.initial_work_tile_info()
         while work_tile.is_valid_tile:
             m_block, head_idx, batch_idx, split_idx = work_tile.tile_idx
+            if const_expr(self.num_splits > 1):
+                split_idx = head_idx // Int32(self.split_heads)
+                head_idx = head_idx % Int32(self.split_heads)
             seqlen = SeqlenInfoCls(m_block, batch_idx)
             m_block, batch_idx = seqlen.m_block, seqlen.batch_idx
             if const_expr(self.is_varlen):
@@ -2502,9 +2537,10 @@ class FlashAttentionForwardSm100:
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
                     self.route_blocks, seqlen.offset_q,
+                    self.num_splits, split_idx,
                 )
 
-            mO_cur = self.output_request_view(mO, seqlen, head_idx, m_block, o_ragged_strides)
+            mO_cur = self.output_request_view(mO, seqlen, head_idx, m_block, o_ragged_strides, split_idx)
             # For q_stage=1, gO tiles span 1*m_block_size rows (single Q, combine writes one O)
             tiler_gO = ((self.mma_tiler_pv[0] * self.q_stage), self.head_dim_v_padded)
             gO = cute.local_tile(mO_cur, tiler_gO, (0 if const_expr(self.is_varlen) else m_block, 0))
@@ -2713,7 +2749,10 @@ class FlashAttentionForwardSm100:
             if const_expr(mLSE is not None):
                 mLSE_cur = mLSE[None, head_idx, seqlen.tensor_batch_idx]
                 if const_expr(self.is_varlen):
-                    q_coord = (Int32(0), seqlen.offset_q) if const_expr(self.pack_gqa) else seqlen.offset_q
+                    lse_q = seqlen.offset_q
+                    if const_expr(self.num_splits > 1):
+                        lse_q = seqlen.offset_q * Int32(self.num_splits) + split_idx
+                    q_coord = (Int32(0), lse_q) if const_expr(self.pack_gqa) else lse_q
                     mLSE_cur = cute.domain_offset((q_coord,), mLSE_cur)
                 # q_stage=1: compute combined LSE from two partial softmax stats
                 m_tile_idx = m_block * self.cta_group_size + mma_tile_coord_v
@@ -3025,7 +3064,8 @@ class FlashAttentionForwardSm100:
             )
 
     @cute.jit
-    def output_request_view(self, mO: cute.Tensor, seqlen, head_idx: Int32, m_block: Int32, o_ragged_strides: tuple):
+    def output_request_view(self, mO: cute.Tensor, seqlen, head_idx: Int32, m_block: Int32, o_ragged_strides: tuple,
+                            split_idx: Int32 = 0):
         if const_expr(self.is_varlen):
             # Transform to request-local coordinates. The bounded tensor has exactly
             # one Q tile: use tile-local coordinates, never subtract origin.
@@ -3034,7 +3074,10 @@ class FlashAttentionForwardSm100:
                                  Int32(self.o_ragged_box))
             shift = self.o_ragged_box - extent
             q_step, head_step = o_ragged_strides
-            address = (seqlen.offset_q + origin - shift) * q_step + head_idx * head_step
+            out_q = seqlen.offset_q
+            if const_expr(self.num_splits > 1):
+                out_q = seqlen.offset_q * Int32(self.num_splits) + split_idx
+            address = (out_q + origin - shift) * q_step + head_idx * head_step
             request = mO[make_ragged_coord(address, False)]
             row = (Int32(0), shift) if const_expr(self.pack_gqa) else shift
             return cute.domain_offset((row, Int32(0)), request)
@@ -3109,6 +3152,9 @@ class FlashAttentionForwardSm100:
         work_tile = tile_scheduler.initial_work_tile_info()
         while work_tile.is_valid_tile:
             m_block, head_idx, batch_idx, split_idx = work_tile.tile_idx
+            if const_expr(self.num_splits > 1):
+                split_idx = head_idx // Int32(self.split_heads)
+                head_idx = head_idx % Int32(self.split_heads)
             seqlen = SeqlenInfoCls(m_block, batch_idx)
             m_block, batch_idx = seqlen.m_block, seqlen.batch_idx
             if const_expr(self.is_varlen):
@@ -3118,9 +3164,10 @@ class FlashAttentionForwardSm100:
                     seqlen.seqlen_k - seqlen.seqlen_q, seqlen.seqlen_q,
                     self.implicit_fixed_support,
                     self.route_blocks, seqlen.offset_q,
+                    self.num_splits, split_idx,
                 )
 
-            mO_cur = self.output_request_view(mO, seqlen, head_idx, m_block, o_ragged_strides)
+            mO_cur = self.output_request_view(mO, seqlen, head_idx, m_block, o_ragged_strides, split_idx)
             tiler_gO = ((self.mma_tiler_pv[0] * self.q_stage), self.head_dim_v_padded)
             gO = cute.local_tile(mO_cur, tiler_gO, (0 if const_expr(self.is_varlen) else m_block, 0))  # (128, 128)
             gO = layout_utils.select(

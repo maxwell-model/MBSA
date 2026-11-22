@@ -109,6 +109,7 @@ def bsa_attn_sm100_blk128_fwd(
     logical_seqlen_k: Optional[int] = None,
     packed_tiles: Optional[torch.Tensor] = None,
     implicit_fixed_route_blocks: int = 0,
+    num_splits: int = 1,
     _prepare_only: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Forward pass for BSA block-sparse attention using the blk128 CuTe-DSL kernel.
@@ -168,6 +169,11 @@ def bsa_attn_sm100_blk128_fwd(
             int32 route [Hkv,T,implicit_fixed_route_blocks]: each token's block IDs outside its fixed
             set, valid IDs first and negative padding after them. Requires implicit_fixed_support and
             packed tiles of one query token each (q_end = q_begin + 1), whose route row is q_begin.
+        num_splits: 1 (default), or with implicit_fixed_route_blocks the number of splits of every tile:
+            split s runs blocks s, s + num_splits, ... of the tile's block list and writes its own state.
+            out is then [T * num_splits, H, D] and lse [H, T * num_splits], token t's split s in row
+            t * num_splits + s; a split past the list holds an arbitrary state. The caller combines the
+            first min(num_splits, blocks of the list) states of each (token, head).
         _prepare_only: Compile without launching and return (compiled, arguments): the caller launches
             with compiled(*arguments, stream) on each run, skipping this wrapper's per-call validation.
             The arguments alias the operands given here.
@@ -299,7 +305,11 @@ def bsa_attn_sm100_blk128_fwd(
         # The route is per KV head: only packed GQA tiles are scheduled by KV head.
         raise ValueError("routed blocks require packed GQA tiles")
 
-    lse_shape = (num_head, seqlen_q) if is_varlen else (batch_size, num_head, seqlen_q)
+    num_splits = int(num_splits)
+    if num_splits < 1 or (num_splits > 1 and (not implicit_fixed_route_blocks or grouped_output)):
+        raise ValueError("num_splits requires routed blocks (implicit_fixed_route_blocks) and the scattered "
+                         "[T,H,D] output layout")
+    lse_shape = (num_head, seqlen_q * num_splits) if is_varlen else (batch_size, num_head, seqlen_q)
     requires_grad = q.requires_grad or k.requires_grad or v.requires_grad
 
     output_shape = (
@@ -308,6 +318,10 @@ def bsa_attn_sm100_blk128_fwd(
     )
     if is_varlen:
         output_shape = output_shape[1:]
+    if num_splits > 1:
+        output_shape = (seqlen_q * num_splits, *output_shape[1:])
+        if lse is None or tuple(lse.shape) != lse_shape:
+            raise ValueError(f"split tiles write their LSE: lse must have shape {lse_shape}")
     if out is None:
         out = torch.empty(output_shape, dtype=q.dtype, device=q.device)
     if tuple(out.shape) != output_shape or out.dtype != q.dtype or out.device != q.device:
@@ -365,6 +379,8 @@ def bsa_attn_sm100_blk128_fwd(
         output_layout,
         is_varlen,
         implicit_fixed_route_blocks,
+        num_splits,
+        num_head_kv if num_splits > 1 else None,     # the split kernel decodes (split, head) with this count
     )
 
     if compile_key not in _sm100_blk128_compile_cache:
@@ -412,6 +428,8 @@ def bsa_attn_sm100_blk128_fwd(
             grouped_output=grouped_output,
             is_varlen=is_varlen,
             implicit_fixed_route_blocks=implicit_fixed_route_blocks,
+            num_splits=num_splits,
+            split_heads=num_head_kv if num_splits > 1 else 0,
         )
 
         _sm100_blk128_compile_cache[compile_key] = cute.compile(

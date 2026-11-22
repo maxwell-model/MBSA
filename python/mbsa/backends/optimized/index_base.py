@@ -104,6 +104,8 @@ class IndexPipelineState:
     route_published: bool = False
     # Packed launch with all Index heads of a token in one CTA bound (IndexDispatch.heads_in_rows).
     heads_in_rows_bound: bool = False
+    # That launch divides each request's KV blocks equally among its partitions at run time.
+    even_split_bound: bool = False
     _lean192_early_router: bool = False
     skip_fixed_blocks_bound: bool = False
     two_sm_bound: bool = False

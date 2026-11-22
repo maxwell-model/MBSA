@@ -57,7 +57,14 @@ the baseline selection. Decode-like steps (one query token per request) have
 requests of 512K and 1M KV tokens, the heads-in-rows Index launch against one
 CTA per head bit for bit, a packed step whose CSR spans more than one row
 range of the builder, and the errors of the stage entry points and of the
-routed attention pass for plans and tiles they do not apply to. `test_index_dispatch` also checks that steps after
+routed attention pass for plans and tiles they do not apply to.
+`tests/regression/test_decode_lengths.py` covers decode steps whose KV lengths
+are published with `serving.KvLengths` instead of a new preparation (bit
+identity with a plan prepared for the lengths, eager and through one captured
+CUDA graph, for a second plan of the step and for a rebound layer), batches of
+1 to 32 requests whose attention tiles are split and combined (against the
+reference, including batches that share a compiled combine), and the policies
+that share the Index work rows and choose the split count. `test_index_dispatch` also checks that steps after
 `serving.warmup` compile no Index router kernel with the default dispatch and
 with the baseline selection (the one SM100 binds), and that runner and warmup
 caches are kept per GPU.

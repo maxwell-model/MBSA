@@ -227,6 +227,7 @@ def prepare_cutedsl_pipeline(
     out: torch.Tensor | None = None,
     backend: str = "default",
     lean192: str = "auto",
+    kv_lengths=None,
 ) -> CutedslPipeline:
     """Prepare a reusable sparse-prefill pipeline on Hopper or Blackwell.
 
@@ -289,6 +290,12 @@ def prepare_cutedsl_pipeline(
             Forced ON rejects supplied mutable Index maps and checked rebind;
             prepare a new dense plan to replace its operand addresses.
             The compiler target must also support SM103 Lean192.
+        kv_lengths: Optional mbsa.serving.KvLengths of a decode-like step (optimized backend, packed one-token
+            requests, paged BF16 Q/K/V, BF16/FP16/E4M3 Index). request_lens then give each request's KV
+            capacity, and the plan reads the lengths the object publishes: KvLengths.set() before a run,
+            or before a replay of the captured graph, replaces a new preparation when the requests' KV
+            grows. Pass the same object to every plan of the step (one per layer). The page maps must hold
+            valid page IDs over each request's capacity.
 
     Returns:
         CutedslPipeline retaining operand/workspace references. run() returns live BF16 O
@@ -304,6 +311,8 @@ def prepare_cutedsl_pipeline(
     if not q.is_cuda:
         raise ValueError("CuTe DSL requires CUDA tensors on SM90, SM100 or SM103")
     capability = torch.cuda.get_device_capability(q.device)
+    if kv_lengths is not None and backend != "optimized":
+        raise ValueError("kv_lengths requires the optimized backend")
     if capability == (9, 0):
         if backend == "optimized":
             raise ValueError(backend + " backend requires SM100 or SM103")
@@ -352,6 +361,7 @@ def prepare_cutedsl_pipeline(
         overlap_fixed_score=overlap_fixed_score,
         partial_dtype=partial_dtype,
         out=out,
+        kv_lengths=kv_lengths,
     )
 
 
@@ -376,6 +386,7 @@ def prepare_sm100(
     fixed_stream: torch.cuda.Stream | None = None,
     backend: str = "default",
     lean192: str = "auto",
+    kv_lengths=None,
 ) -> CutedslPipeline:
     """Prepare a Blackwell pipeline with explicit validation and stream controls.
 
@@ -441,6 +452,12 @@ def prepare_sm100(
             Forced ON does not accept supplied mutable Index maps or checked
             rebind. Use a new dense plan or auto/off for replacement bindings.
             An incompatible compiler target also rejects forced ON.
+        kv_lengths: Optional mbsa.serving.KvLengths of a decode-like step (optimized backend, packed one-token
+            requests, paged BF16 Q/K/V, BF16/FP16/E4M3 Index). request_lens then give each request's KV
+            capacity, and the plan reads the lengths the object publishes: KvLengths.set() before a run,
+            or before a replay of the captured graph, replaces a new preparation when the requests' KV
+            grows. Pass the same object to every plan of the step (one per layer). The page maps must hold
+            valid page IDs over each request's capacity.
 
     Returns:
         CutedslPipeline with the same live O/LSE/routes contract as prepare_cutedsl_pipeline.
@@ -459,8 +476,10 @@ def prepare_sm100(
         raise ValueError("packed lengths are owned by cu_seqlens_k")
     if backend == "optimized":
         from .backends.optimized.runtime import prepare_sm100 as prepare
-        index_options = {"lean192": lean192}
+        index_options = {"lean192": lean192, "kv_lengths": kv_lengths}
     else:
+        if kv_lengths is not None:
+            raise ValueError("kv_lengths requires the optimized backend")
         from .backends.default import prepare_sm100 as prepare
         index_options = {}
     return prepare(index_q, index_k, q, k, v, index_q_scales=index_q_scales,

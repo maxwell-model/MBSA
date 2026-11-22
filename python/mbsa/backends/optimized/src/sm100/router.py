@@ -97,12 +97,16 @@ def _packed_top16_arguments(q, k, page_indices, tile_metadata, scores, ids, rout
 
 @cute.kernel
 def merge_native_top16(scores, ids, route, compact_ids: cutlass.Constexpr,
-                       runtime_partitions: cutlass.Constexpr = False, row_heads: cutlass.Constexpr = 1):
+                       runtime_partitions: cutlass.Constexpr = False, row_heads: cutlass.Constexpr = 1,
+                       work_rows=None, even_split: cutlass.Constexpr = False):
     """Merge native UMMA scores without reading or decoding Q/K.
 
     With row_heads > 1 a score row is one (query token, Index head) pair, row = token * row_heads + head,
-    and its merged IDs are published to route[head, token, :].
+    and its merged IDs are published to route[head, token, :]. With even_split the row's token owns
+    work_rows[token, 5] partitions (work row `token` is its first partition); the others hold stale data.
     """
+    if cutlass.const_expr(even_split):
+        cute.arch.griddepcontrol_wait()     # a dependent launch: the router before it writes the scores
     head, tile, _ = cute.arch.block_idx()
     tid = cute.arch.thread_idx()[0]
     lane = tid % 32
@@ -113,9 +117,12 @@ def merge_native_top16(scores, ids, route, compact_ids: cutlass.Constexpr,
         if lane < 16:
             value = scores[head, 0, query, lane]
             index = ids[head, 0, query, lane]
-        if cutlass.const_expr(runtime_partitions):
+        parts = scores.shape[1]
+        if cutlass.const_expr(even_split):
+            parts = work_rows[query // row_heads, 5]
+        if cutlass.const_expr(runtime_partitions or even_split):
             # The partition count is a runtime extent: one compiled merge serves every count.
-            for part in cutlass.range(1, scores.shape[1]):
+            for part in cutlass.range(1, parts):
                 if lane >= 16:
                     value = scores[head, part, query, 31 - lane]
                     index = ids[head, part, query, 31 - lane]
@@ -147,6 +154,7 @@ def merge_native_top16(scores, ids, route, compact_ids: cutlass.Constexpr,
 
 
 _TREE_MERGE_WAYS = 8   # partitions folded per tree-merge level
+_TREE_MERGE_LEVELS = 3   # log2(_TREE_MERGE_WAYS): pairwise rounds that fold the warps' lists
 # Queued Top-16 insertion: per-row queue depth (a deeper queue is no faster on B300, a shallower one slower).
 _QUEUE_DEPTH = 3
 # The serial merge walks a row's partitions one after another; beyond this count the tree merge, which folds
@@ -174,13 +182,16 @@ def _bitonic_top16_fold(value, index, lane):
 
 @cute.kernel
 def merge_native_top16_tree(scores, ids, route, compact_ids: cutlass.Constexpr,
-                            runtime_partitions: cutlass.Constexpr = False, row_heads: cutlass.Constexpr = 1):
+                            runtime_partitions: cutlass.Constexpr = False, row_heads: cutlass.Constexpr = 1,
+                            work_rows=None, even_split: cutlass.Constexpr = False):
     """Merge many partitions of one query row with _TREE_MERGE_WAYS warps.
 
     Warp w folds partitions w, w + ways, ... with the same bitonic step as merge_native_top16; warp 0 then
     folds the other warps' lists from shared memory. The Top-16 under (score desc, smaller valid id) is a
     total order, so the result does not depend on the merge order.
     """
+    if cutlass.const_expr(even_split):
+        cute.arch.griddepcontrol_wait()     # a dependent launch: the router before it writes the scores
     head, query, _ = cute.arch.block_idx()
     tid = cute.arch.thread_idx()[0]
     lane = tid % 32
@@ -190,15 +201,19 @@ def merge_native_top16_tree(scores, ids, route, compact_ids: cutlass.Constexpr,
     shared_indices = smem.allocate_tensor(Int32, cute.make_layout(16 * _TREE_MERGE_WAYS), 16)
     value = -Float32.inf
     index = Int32(-1)
-    if lane < 16 and warp < scores.shape[1]:
+    parts = scores.shape[1]
+    if cutlass.const_expr(even_split):
+        # The row's token owns this many of the buffer's partitions (see merge_native_top16).
+        parts = work_rows[query // row_heads, 5]
+    if lane < 16 and warp < parts:
         value = scores[head, warp, query, lane]
         index = ids[head, warp, query, lane]
-    if cutlass.const_expr(runtime_partitions):
-        for chunk in cutlass.range(1, (scores.shape[1] + _TREE_MERGE_WAYS - 1) // _TREE_MERGE_WAYS):
+    if cutlass.const_expr(runtime_partitions or even_split):
+        for chunk in cutlass.range(1, (parts + _TREE_MERGE_WAYS - 1) // _TREE_MERGE_WAYS):
             if lane >= 16:
                 value = -Float32.inf
                 index = Int32(-1)
-                if warp + chunk * _TREE_MERGE_WAYS < scores.shape[1]:
+                if warp + chunk * _TREE_MERGE_WAYS < parts:
                     value = scores[head, warp + chunk * _TREE_MERGE_WAYS, query, 31 - lane]
                     index = ids[head, warp + chunk * _TREE_MERGE_WAYS, query, 31 - lane]
             value, index = _bitonic_top16_fold(value, index, lane)
@@ -211,16 +226,32 @@ def merge_native_top16_tree(scores, ids, route, compact_ids: cutlass.Constexpr,
                     value = scores[head, warp + chunk * _TREE_MERGE_WAYS, query, 31 - lane]
                     index = ids[head, warp + chunk * _TREE_MERGE_WAYS, query, 31 - lane]
             value, index = _bitonic_top16_fold(value, index, lane)
-    if lane < 16:
-        shared_values[warp * 16 + lane] = value
-        shared_indices[warp * 16 + lane] = index
-    cute.arch.barrier()
+    if cutlass.const_expr(even_split):
+        # A decode-like step is a few short kernels: the warps' lists are folded pairwise, in three rounds
+        # (warps 0-7, then 0/2/4/6, then 0/4), instead of seven folds by warp 0. A warp publishes its list
+        # only while it still holds one, so no list is rewritten while another warp reads it.
+        for level in cutlass.range_constexpr(_TREE_MERGE_LEVELS):
+            if lane < 16 and warp % (1 << level) == 0:
+                shared_values[warp * 16 + lane] = value
+                shared_indices[warp * 16 + lane] = index
+            cute.arch.barrier()
+            if warp % (2 << level) == 0:
+                if lane >= 16:
+                    value = shared_values[(warp + (1 << level)) * 16 + 31 - lane]
+                    index = shared_indices[(warp + (1 << level)) * 16 + 31 - lane]
+                value, index = _bitonic_top16_fold(value, index, lane)
+    else:
+        if lane < 16:
+            shared_values[warp * 16 + lane] = value
+            shared_indices[warp * 16 + lane] = index
+        cute.arch.barrier()
+        if warp == 0:
+            for other in cutlass.range_constexpr(1, _TREE_MERGE_WAYS):
+                if lane >= 16:
+                    value = shared_values[other * 16 + 31 - lane]
+                    index = shared_indices[other * 16 + 31 - lane]
+                value, index = _bitonic_top16_fold(value, index, lane)
     if warp == 0:
-        for other in cutlass.range_constexpr(1, _TREE_MERGE_WAYS):
-            if lane >= 16:
-                value = shared_values[other * 16 + 31 - lane]
-                index = shared_indices[other * 16 + 31 - lane]
-            value, index = _bitonic_top16_fold(value, index, lane)
         if lane < 16:
             if cutlass.const_expr(row_heads > 1):
                 route[query % row_heads, query // row_heads, lane] = index
@@ -270,6 +301,7 @@ class IndexerLocalTop16Sm100:
         parallel_insert: bool = False,
         queued_insert: bool = False,
         row_heads: int = 1,
+        even_split: bool = False,
     ) -> None:
         # Heads in rows (packed launches of one-token requests): the query operand is [tokens * row_heads, 1, 128],
         # a tile row is one (query token, Index head) pair, row = token * row_heads + head, and one CTA scores
@@ -280,6 +312,16 @@ class IndexerLocalTop16Sm100:
         if self.row_heads < 1 or (self.row_heads > 1 and not (
                 packed_requests and direct_route and query_tile == 128 and not two_sm and not lean192_early)):
             raise ValueError("row_heads requires a packed Q128 launch with a direct route")
+        # Even split (heads in rows): the launch is a list of work rows, one CTA each. A row is
+        # (q_begin, q_end, 0, page_begin, KV tokens, partitions of its request, its partition), and the request's
+        # KV blocks are divided equally among its partitions at run time instead of into partitions of
+        # partition_blocks. Rows 0..requests-1 are the first partition of each request, in request order (the
+        # merge reads a request's partition count there); an unused row is all zeros. The CTAs with work, and how
+        # they are shared among requests, then follow the current KV lengths, not the lengths the launch was
+        # prepared for.
+        self.even_split = bool(even_split)
+        if self.even_split and (self.row_heads == 1 or skip_fixed_blocks):
+            raise ValueError("even_split requires a heads-in-rows launch without the fixed-block skip")
         # Queued Top-16 insertion: a candidate that beats the row's 16th entry joins a per-row queue of
         # _QUEUE_DEPTH; the warp runs the insertion network at most once per KV block, when some row's queue is
         # full, inserting every row's queue head (re-checked against the current list), and drains the queues at the
@@ -446,6 +488,8 @@ class IndexerLocalTop16Sm100:
             partitions = self.packed_partitions
             if cutlass.const_expr(self.runtime_partitions):
                 partitions = candidate_scores.shape[1]
+            if cutlass.const_expr(self.even_split):
+                partitions = 1     # a work row is one CTA; its partition is column 6 of the row
         self.kernel(
             tiled_mma,
             tma_q,
@@ -476,19 +520,22 @@ class IndexerLocalTop16Sm100:
             and not self.fuse_single_partition_compact and self.tree_merge
         ):
             merge_native_top16_tree(candidate_scores, candidate_ids, route, self.compact_ids,
-                                    self.runtime_partitions, self.row_heads).launch(
-                grid=(q_heads, total_q, 1), block=(32 * _TREE_MERGE_WAYS, 1, 1), stream=stream)
+                                    self.runtime_partitions, self.row_heads, tile_metadata, self.even_split).launch(
+                grid=(q_heads, total_q, 1), block=(32 * _TREE_MERGE_WAYS, 1, 1), stream=stream,
+                # A decode-like step is a few short kernels: the merge launches while the router finishes.
+                **(dict(use_pdl=True) if self.even_split else {}))
         if cutlass.const_expr(
             (self.compact_ids or self.direct_route)
             and not self.fuse_single_partition_compact and not self.tree_merge
         ):
             merge_native_top16(
                 candidate_scores, candidate_ids, route, self.compact_ids,
-                self.runtime_partitions, self.row_heads
+                self.runtime_partitions, self.row_heads, tile_metadata, self.even_split
             ).launch(
                 grid=(q_heads, cute.ceil_div(total_q, 4), 1),
                 block=(128, 1, 1),
                 stream=stream,
+                **(dict(use_pdl=True) if self.even_split else {}),
             )
 
     @cute.kernel
@@ -531,6 +578,8 @@ class IndexerLocalTop16Sm100:
             page_begin = mTileMetadata[q_tile_idx, 3]
             request_k_tokens = mTileMetadata[q_tile_idx, 4]
             request_partitions = mTileMetadata[q_tile_idx, 5]
+            if cutlass.const_expr(self.even_split):
+                partition_idx = mTileMetadata[q_tile_idx, 6]
         request_q_tokens = q_end - q_begin
         q_local_start = q_local_tile * Int32(self.q_tile)
         q_tile_start = q_begin + q_local_start
@@ -544,6 +593,12 @@ class IndexerLocalTop16Sm100:
         kv_blocks = (request_k_tokens + Int32(self.k_tile - 1)) // Int32(self.k_tile)
         partition_begin = partition_idx * Int32(self.partition_blocks)
         partition_end = partition_begin + Int32(self.partition_blocks)
+        if cutlass.const_expr(self.even_split):
+            # An unused work row is all zeros: no partitions, no rows, no stores.
+            even_parts = cutlass.max(request_partitions, Int32(1))
+            even_blocks = (kv_blocks + even_parts - Int32(1)) // even_parts
+            partition_begin = partition_idx * even_blocks
+            partition_end = partition_begin + even_blocks
         if partition_end > kv_blocks:
             partition_end = kv_blocks
         request_q_offset = request_k_tokens - request_q_tokens
@@ -1466,6 +1521,7 @@ def indexer_packed_top16(
     _prepare_only: bool = False,
     out_route: torch.Tensor | None = None,
     _row_heads: int = 1,
+    _even_split: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor] | tuple[Any, tuple[Any, ...]]:
     """Run one Router launch over request-local tiles in a packed Q tensor.
 
@@ -1519,13 +1575,13 @@ def indexer_packed_top16(
         raise ValueError("packed page_indices must be contiguous CUDA int32")
     if (
         tile_metadata.ndim != 2
-        or tile_metadata.shape[1] != 6
+        or tile_metadata.shape[1] != (7 if _even_split else 6)
         or tile_metadata.dtype != torch.int32
         or tile_metadata.device != q.device
         or not tile_metadata.is_contiguous()
         or tile_metadata.shape[0] == 0
     ):
-        raise ValueError("tile_metadata must be contiguous CUDA int32 [tiles,6]")
+        raise ValueError("tile_metadata must be contiguous CUDA int32 [tiles,6] ([rows,7] for an even split)")
     partitions = int(partitions)
     if partitions <= 0:
         raise ValueError("partitions must be positive")
@@ -1623,6 +1679,10 @@ def indexer_packed_top16(
         key += ('runtime_partitions', True)
     if _row_heads != 1:
         key += ('row_heads', _row_heads)
+    if _even_split:
+        if _row_heads == 1:
+            raise ValueError("_even_split requires _row_heads")
+        key += ('even_split', True)
     compiled = _COMPILE_CACHE.get(key)
     if compiled is None:
         compiled = cute.compile(
@@ -1647,6 +1707,7 @@ def indexer_packed_top16(
                 tree_merge=tree_merge,
                 parallel_insert=_parallel_insert,
                 queued_insert=_queued_insert,
+                even_split=_even_split,
             ),
             *args,
             stream,

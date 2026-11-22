@@ -173,8 +173,8 @@ the KV partition count at run time, so the compiled kernels do not depend on
 the partition count, only on the partition width and merge form. With the
 optimized backend, the first `serving.warmup` call for a GPU and a BF16, FP16
 or E4M3 Index format also compiles every Index router kernel that GPU's
-selection can bind for paged steps (55 BF16 or 78 E4M3 kernels with the
-default dispatch; 17 with the baseline selection, which SM100 and
+selection can bind for paged steps (45 BF16 or 68 E4M3 kernels with the
+default dispatch; 7 with the baseline selection, which SM100 and
 `MBSA_INDEX_DISPATCH=baseline` use), so steps of other geometries compile no
 Index router kernel at run time. The MXFP6 scorer compiles one kernel per
 partition count; `serving.warmup_request_sets` lists a step for each. A bare
@@ -190,14 +190,47 @@ prefix, local-window and selected remote blocks, which writes the final output
 and LSE. Routes, output and LSE follow the same definition as any other step.
 With a BF16 K/V cache nothing in this path is sized by the KV length of the
 whole batch, so the per-request limit of 1M KV tokens holds for any number of
-requests. A packed
-step scores all four Index heads of a request in one CTA and reads its Index K
-once, so its time is the Index K read at memory bandwidth plus about 50 us of
-attention. Steps that mix one-token requests with longer queries take the
-regular path: submit decode requests as their own step. With an FP8 K/V cache
-the optimized backend still converts the step's logical pages to BF16 on each
-run, which for a decode-like step costs far more than the attention itself; use
-a BF16 K/V cache for decode.
+requests. The Index launch scores all four Index heads of a request in one CTA
+and reads its Index K once; it is a list of work rows, one CTA each, shared
+among the requests in proportion to their KV blocks, so its time is the Index K
+read at memory bandwidth whatever the KV lengths of the batch. A batch of fewer
+than about 19 requests leaves SMs without an attention tile: every tile's blocks
+then go to 2 to 16 CTAs, and a small kernel combines their states (the output
+is then rounded to BF16 once more than in a single pass). Steps that mix
+one-token requests with longer queries take the regular path: submit decode
+requests as their own step. With an FP8 K/V cache the optimized backend still
+converts the step's logical pages to BF16 on each run, which for a decode-like
+step costs far more than the attention itself; use a BF16 K/V cache for decode.
+
+A plan is prepared for its request lengths. In a decode loop the KV of every
+request grows by a token per step: prepare the plans once at a KV capacity and
+publish the lengths instead.
+
+```python
+from mbsa import prepare_cutedsl_pipeline
+from mbsa.serving import KvLengths
+
+lengths = KvLengths("cuda")
+plans = [prepare_cutedsl_pipeline(index_q[layer], index_k[layer], q[layer], k[layer], v[layer],
+                                  cu_seqlens_q=cu_q, cu_seqlens_k=cu_capacity,
+                                  request_lens=[(1, capacity)] * batch, index_page_indices=index_pages,
+                                  page_table=page_table, backend="optimized", kv_lengths=lengths)
+         for layer in range(layers)]          # capture them, or the caller's graph, once
+for step in decode_steps:
+    lengths.set(step.kv_lens)                 # one host call per token, about 40 us for 32 requests
+    for plan in plans:
+        plan.run()                            # or replay the captured graph
+```
+
+`request_lens` are then the requests' KV capacities and the page maps must hold
+valid page IDs over them; `set()` takes one length per request, from 1 to its
+capacity. It is a host-to-device copy on the current stream, so it returns once
+the work already queued on that stream has finished. The plans of a step share the
+lengths, so one call serves every layer. Results are bit-identical to a plan
+prepared for the lengths themselves. `kv_lengths` needs packed one-token
+requests (also for a single request), paged BF16 Q/K/V and a BF16, FP16 or
+E4M3 Index. `serving.Prefill` stages every step anew and runs eagerly; a decode
+loop that wants one graph for all its steps prepares its plans as above.
 
 B300 SXM6, one step of 32 one-token requests with their own pages, BF16 K/V
 cache, p50 in milliseconds (eager `run()` between CUDA events, and replay of
@@ -211,23 +244,37 @@ latency, which the graph removes):
 | E4M3 Index, eager | 0.12 | 0.12 | 0.13 | 0.16 | 0.21 | 0.30 | 0.49 | 0.88 |
 | E4M3 Index, CUDA graph | 0.07 | 0.07 | 0.09 | 0.11 | 0.16 | 0.26 | 0.45 | 0.85 |
 
+One plan and one captured graph at a capacity of 1M KV tokens, BF16 Index,
+replay at each length (ms):
+
+| KV tokens per request | 8K | 16K | 32K | 64K | 128K | 256K | 512K | 1M |
+|---|---|---|---|---|---|---|---|---|
+| 1 request | 0.023 | 0.024 | 0.025 | 0.028 | 0.033 | 0.036 | 0.052 | 0.071 |
+| 8 requests | 0.030 | 0.034 | 0.043 | 0.053 | 0.073 | 0.111 | 0.186 | 0.339 |
+| 32 requests | 0.070 | 0.080 | 0.099 | 0.137 | 0.214 | 0.364 | 0.670 | 1.281 |
+
 The eager rows are repeated runs of one bound step. `serving.Prefill` rebinds
 every layer, which costs about 0.25 ms of host time per layer: through it the
-BF16 Index step takes 0.36 ms at 8K, 0.48 ms at 128K and 1.57 ms at 1M. A CUDA
-graph replays without host work.
+BF16 Index step takes 0.36 ms at 8K, 0.48 ms at 128K and 1.57 ms at 1M, and a
+new step (a new token) is prepared again on its first layer. A CUDA graph
+replays without host work.
 
 `benchmarks/bench_decode.py` measures both columns for a step of one-token
-requests (32 by default):
+requests (32 by default), with a plan per length or, with `--capacity`, with
+one plan and one graph for every length:
 
 ```bash
 .venv/bin/python benchmarks/bench_decode.py --backend optimized \
   --lengths 8192,16384,32768,65536,131072,262144,524288,1048576 \
   --output /tmp/mbsa-decode.json
+.venv/bin/python benchmarks/bench_decode.py --backend optimized --capacity 1048576 \
+  --batch 8 --output /tmp/mbsa-decode-capacity.json
 ```
 
 It captures the step with `pipeline.capture_mega_graph()` and replays it with
 `pipeline.run_mega()`. A plan can also run inside a caller's own graph
-capture; in either case it can no longer be rebound afterwards.
+capture; in either case it can no longer be rebound afterwards, while
+`KvLengths.set()` stays available.
 
 Optimized Index page maps bind directly to the supplied tensor. Active request rows must form one adjacent contiguous storage span, with a 16-byte base alignment for unpacked or MX Index and 4-byte base alignment for packed non-MX Index. Individual compact request rows need not be 16-byte aligned. Preparation and rebind reject gapped or strided maps and an unaligned base. Pass compact active page IDs for variable-length requests. Optimized serving accepts a 1-D compact Index map. As with the default backend, requests with Q > 8192 are split into pieces of at most 8192 queries; the pieces' Index map is gathered once when the step is prepared. In-place map updates are visible during eager execution and CUDA Graph replay, except in such split steps, which read the copies gathered at preparation.
 

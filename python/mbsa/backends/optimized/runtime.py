@@ -468,13 +468,14 @@ class PreparedOwner(PreparedOwnerBase):
         if check_pages and p.cutedsl_index_pages is not None:
             p.cutedsl_use_page_table = True
             p._lean192_early_router = False
-        from .index import bind_score_operands
+        from .index import bind_score_operands, require_kv_lengths_launch
         from .page_map import bind_page_operands
         bind_page_operands(p, rows)
         if p.mxfp6_router is not None:
             p.mxfp6_router = copy.copy(p.mxfp6_router)
             p.mxfp6_router.rebind(index_q, index_q_scales, index_k, p.cutedsl_packed_pages)
         bind_score_operands(p)
+        require_kv_lengths_launch(p)
         # Build the replacement ownership snapshot before publishing bindings.
         # The retired state keeps its own snapshot until its queued work ends.
         staged.backing_tensors = _backing_tensors(
@@ -535,7 +536,7 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
                    cu_seqlens_q=None, cu_seqlens_k=None, request_lens=None,
                    index_page_indices=None, page_table=None, logical_k_tokens=None,
                    overlap_fixed_score=None, partial_dtype=None, out=None,
-                   check_device_inputs=True, fixed_stream=None, lean192="auto"):
+                   check_device_inputs=True, fixed_stream=None, lean192="auto", kv_lengths=None):
     validate_lean192(lean192)
     if lean192 == "on":
         from .index import lean192_compiler_supported
@@ -561,6 +562,15 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
     if not lens or any(not 0 < qn <= min(kn, 8192) or kn > 1048576 for qn, kn in lens):
         raise ValueError("each request requires 0 < Q <= 8192 and Q <= KV <= 1M")
     q_lens, kv_lens = tuple(qn for qn, _ in lens), tuple(kn for _, kn in lens)
+    if kv_lengths is not None:
+        # The step runs at KV lengths published after preparation: request_lens are its capacities.
+        if (unpacked or max(q_lens) != 1 or k.ndim != 4 or index_k.dtype == torch.uint8
+                or any(t.dtype != torch.bfloat16 for t in (q, k, v))):
+            raise ValueError("kv_lengths requires packed one-token requests (cu_seqlens and request_lens), "
+                             "paged BF16 Q/K/V and a BF16, FP16 or E4M3 Index")
+        if kv_lengths.device != q.device:
+            raise ValueError("kv_lengths must be on the Q device")
+        kv_lengths._bind(kv_lens)     # prepare_sm100 undoes a first binding if the preparation fails
     counts = tuple((kn + 127) // 128 for kn in kv_lens)
     pages_supplied = index_page_indices is not None
     if index_page_indices is None:
@@ -637,6 +647,7 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         dynamic_route_fully_visible=fully_visible,
         dynamic_full_score_tiles=fully_visible,
         cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k, query_outer=query_outer,
+        kv_lengths=kv_lengths,
     )
     if attention.query_outer:
         overlap_fixed_score = False
@@ -646,7 +657,7 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         index_pages_identity=not pages_supplied and len(lens)==1,
         check_device_inputs=check_device_inputs, original_q=q, original_k=k,
         original_v=v, contiguous_unpacked=unpacked and k.ndim==3, lean192=lean192,
-        overlap_fixed_score=bool(overlap_fixed_score) and not attention.fixed_only)
+        overlap_fixed_score=bool(overlap_fixed_score) and not attention.fixed_only, kv_lengths=kv_lengths)
     if not overlap_fixed_score or attention.fixed_only:
         fixed_stream = None
     elif fixed_stream is None:
@@ -658,7 +669,7 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
                    request_lens=None if unpacked else lens, logical_k_tokens=logical_k_tokens,
                    overlap_fixed_score=overlap_fixed_score, partial_dtype=partial_dtype,
                    check_device_inputs=check_device_inputs, fixed_stream=fixed_stream,
-                   lean192=lean192)
+                   lean192=lean192, kv_lengths=kv_lengths)
     state = _State(attention, index, bindings, lens, rows, tuple(conversions), options,
                     fixed_stream, torch.cuda.Event() if fixed_stream else None,
                     torch.cuda.Event() if fixed_stream else None)
@@ -684,6 +695,13 @@ def prepare_sm100(*args, **kwargs):
         CutedslPipeline with retained bindings/workspaces and live O/LSE/routes.
     """
     from ...api import CutedslPipeline
-    state = _prepare_state(*args, **kwargs)
+    lengths = kwargs.get("kv_lengths")
+    first = lengths is not None and lengths.capacities is None
+    try:
+        state = _prepare_state(*args, **kwargs)
+    except BaseException:
+        if first:
+            lengths._unbind()     # a failed first preparation leaves the object as it was created
+        raise
     plan = Plan(state)
     return CutedslPipeline(plan, PreparedOwner(plan, state.lens))
