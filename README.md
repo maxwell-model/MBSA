@@ -276,6 +276,13 @@ It captures the step with `pipeline.capture_mega_graph()` and replays it with
 capture; in either case it can no longer be rebound afterwards, while
 `KvLengths.set()` stays available.
 
+`benchmarks/bench_decode_paired.py` times the same step against the decode
+chain of another checkout (`--reference-root`, one that provides
+`bench/bench_top32_chain.py`) in one process: both sides read the same tensors
+and are replayed in alternating blocks, for batches of equal or unequal KV
+lengths, with one captured graph at a KV capacity or a plan per case. It
+reports both times, the speedup and the distance between the two outputs.
+
 Optimized Index page maps bind directly to the supplied tensor. Active request rows must form one adjacent contiguous storage span, with a 16-byte base alignment for unpacked or MX Index and 4-byte base alignment for packed non-MX Index. Individual compact request rows need not be 16-byte aligned. Preparation and rebind reject gapped or strided maps and an unaligned base. Pass compact active page IDs for variable-length requests. Optimized serving accepts a 1-D compact Index map. As with the default backend, requests with Q > 8192 are split into pieces of at most 8192 queries; the pieces' Index map is gathered once when the step is prepared. In-place map updates are visible during eager execution and CUDA Graph replay, except in such split steps, which read the copies gathered at preparation.
 
 Direct Q/K/V, Index Q and floating Index K, MX Q scales and caller output
