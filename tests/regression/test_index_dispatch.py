@@ -384,10 +384,11 @@ class DeviceKeys(unittest.TestCase):
             for ordinal in (0, 1):
                 with torch.cuda.device(ordinal):
                     warmup(Prefill('cuda', backend='optimized'), ((16, 4096),), index_format='bf16')
-        compiled = [sum(key[0] == ordinal and key[1] == torch.bfloat16 for key in router._COMPILE_CACHE)
+        # Earlier tests of the process may have compiled more kernels for GPU 0: compare the variants.
+        compiled = [{key[2:] for key in router._COMPILE_CACHE if key[0] == ordinal and key[1] == torch.bfloat16}
                     for ordinal in (0, 1)]
-        self.assertGreater(compiled[1], 1)
-        self.assertEqual(compiled[0], compiled[1])
+        self.assertGreater(len(compiled[1]), 1)
+        self.assertLessEqual(compiled[1], compiled[0])
 
 
 if __name__ == '__main__':
