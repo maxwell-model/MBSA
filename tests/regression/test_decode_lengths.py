@@ -94,6 +94,18 @@ class DecodeLengths(BackendCaseMixin, unittest.TestCase):
                     self.assert_identical(pipeline.run(), self.fresh(inputs, rows, kv_lens))
                 self.compare(pipeline.run(), decode_reference(inputs, rows, STEPS[-1]))
 
+    def test_a_batch_whose_rows_would_outgrow_the_sms(self):
+        # 31 requests: five rows each would be 155 CTAs on 148 SMs; the launch keeps four.
+        kv_lens = tuple(300 + 1277 * i for i in range(31))
+        pipeline, lengths, inputs, rows = self.capacity_step(batch=31)
+        table = pipeline.plan._state.index.cutedsl_packed_router_tile_metadata
+        sm_count = torch.cuda.get_device_properties(0).multi_processor_count
+        self.assertLessEqual(table.shape[0], max(31, sm_count))
+        for step in ((CAPACITY,) * 31, kv_lens):
+            lengths.set(step)
+            self.assert_identical(pipeline.run(), self.fresh(inputs, rows, step))
+        self.compare(pipeline.run(), decode_reference(inputs, rows, kv_lens))
+
     def test_one_captured_graph_serves_every_step(self):
         pipeline, lengths, inputs, rows = self.capacity_step()
         pipeline.capture_mega_graph()
@@ -195,12 +207,20 @@ class DecodeLengths(BackendCaseMixin, unittest.TestCase):
             self.assertTrue(splits == 1 or tokens * 4 * splits <= 148)
 
     def test_work_rows_share_the_launch_in_proportion_to_kv_blocks(self):
-        for batch in (1, 2, 3, 5, 13, 32, 48, 64, 126, 127, 300):
-            rows = heads_in_rows_work_rows(batch, sm_count=148)
-            # The fewest whole rows per request that put HEADS_IN_ROWS_CTAS_PER_SM CTAs on every SM.
-            self.assertEqual(rows % batch, 0)
-            self.assertGreaterEqual(rows, max(batch, HEADS_IN_ROWS_CTAS_PER_SM * 148))
-            self.assertTrue(rows == batch or rows - batch < HEADS_IN_ROWS_CTAS_PER_SM * 148)
+        for sm_count in (148, 132, 300):
+            budget = -int(-HEADS_IN_ROWS_CTAS_PER_SM * sm_count // 1)
+            for batch in range(1, 2 * sm_count + 1):        # every batch: a launch must not outgrow the SMs
+                rows = heads_in_rows_work_rows(batch, sm_count=sm_count)
+                self.assertEqual(rows % batch, 0)
+                self.assertGreaterEqual(rows, batch)
+                # Never more rows than SMs while every request can keep a row of its own.
+                self.assertLessEqual(rows, max(batch, sm_count))
+                # The fewest whole rows per request that reach the budget, or the most that fit the SMs.
+                fewest = -(-budget // batch)
+                self.assertEqual(rows // batch, fewest if batch * fewest <= sm_count else max(1, sm_count // batch))
+        self.assertEqual([heads_in_rows_work_rows(batch, sm_count=148)
+                          for batch in (1, 13, 24, 25, 29, 30, 31, 32, 40, 42, 50, 56, 63, 64, 75, 100, 148, 149)],
+                         [126, 130, 144, 125, 145, 120, 124, 128, 120, 126, 100, 112, 126, 128, 75, 100, 148, 149])
         self.assertEqual(heads_in_rows_partition_counts((8192,) * 32, 128), [4] * 32)
         skewed = heads_in_rows_partition_counts((1048576,) + (8192,) * 31, 128)
         self.assertEqual((sum(skewed), skewed[0], min(skewed)), (128, 78, 1))

@@ -407,11 +407,17 @@ HEADS_IN_ROWS_PARTITION_MIN_BLOCKS = 8
 def heads_in_rows_work_rows(batch, *, sm_count=148):
     """Work rows (CTAs) of a heads-in-rows launch of `batch` requests.
 
-    A whole number of rows per request (equal KV lengths then get equal shares), the fewest that put
-    HEADS_IN_ROWS_CTAS_PER_SM CTAs on every SM; one row per request beyond that. Pure host arithmetic.
+    A whole number of rows per request (equal KV lengths then get equal shares): the fewest that put
+    HEADS_IN_ROWS_CTAS_PER_SM CTAs on every SM, but never more rows than SMs while a request can keep a row
+    of its own. A row beyond the SM count waits for an SM, which costs more than the SMs a smaller whole
+    number leaves idle (B300, 256K KV per request: 25 requests take 404 us with 150 rows and 295 us with
+    125; 50 requests 801 us with 150 and 621 us with 100). Pure host arithmetic.
     """
     budget = -int(-HEADS_IN_ROWS_CTAS_PER_SM * sm_count // 1)
-    return batch * max(1, -(-budget // batch))
+    per_request = max(1, -(-budget // batch))
+    if batch * per_request > sm_count:
+        per_request = max(1, sm_count // batch)
+    return batch * per_request
 
 
 def heads_in_rows_partition_counts(kv_lens, rows):
