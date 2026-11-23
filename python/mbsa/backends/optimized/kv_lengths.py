@@ -65,8 +65,10 @@ class KvLengths:
         self._rows = 0
         self._host: torch.Tensor | None = None        # int32 [rows * 7 + requests * 6]: both tables
         self._tables: torch.Tensor | None = None      # its device copy
-        self._blocks: tuple[int, ...] | None = None   # KV blocks of the lengths the Index rows were laid out for
+        self._blocks: tuple[int, ...] | None = None   # KV blocks of the published lengths
+        self._counts: list[int] | None = None         # partitions per request the Index rows are laid out for
         self._row_request: torch.Tensor | None = None  # request of every used Index row
+        self._request_rows: torch.Tensor | None = None  # [requests,4]: the row columns a request never changes
         self._k_begin: torch.Tensor | None = None
 
     @property
@@ -93,6 +95,10 @@ class KvLengths:
         tables = torch.empty_like(host, device=self.device)
         k_begin = torch.tensor(list(accumulate(capacities, initial=0))[:-1], dtype=torch.int32)
         self._rows, self._host, self._tables, self._k_begin = rows, host, tables, k_begin
+        # What set() never changes: a request's (q_begin, q_end, 0, page_begin) and its tile but for the end.
+        first = index_work_rows((_INDEX_HEADS,) * requests, capacities, capacities, (1,) * requests, requests)
+        self._request_rows = torch.tensor(first, dtype=torch.int32).view(requests, 7)[:, :4].clone()
+        host[rows * 7:].copy_(torch.tensor(attention_tiles(capacities, capacities), dtype=torch.int32))
         # One tensor object per table: a plan recognises its operands by identity.
         self._index_view = tables[:rows * 7].view(rows, 7)
         self._tiles_view = tables[rows * 7:].view(requests, 6)
@@ -101,8 +107,8 @@ class KvLengths:
 
     def _unbind(self) -> None:
         """Forget the requests: the preparation that fixed them failed."""
-        self._capacities = self._lengths = self._blocks = None
-        self._host = self._tables = self._row_request = self._k_begin = None
+        self._capacities = self._lengths = self._blocks = self._counts = None
+        self._host = self._tables = self._row_request = self._request_rows = self._k_begin = None
         self._rows = 0
 
     def _index_rows(self, row_groups, rows) -> torch.Tensor:
@@ -115,26 +121,37 @@ class KvLengths:
         """The shared attention tiles [requests,6]."""
         return self._tiles_view
 
+    def _lay_out(self, index, counts) -> None:
+        """Write the rows index_work_rows gives these partition counts, but for the lengths (column 4)."""
+        requests = len(counts)
+        others = torch.tensor(counts, dtype=torch.int64) - 1
+        ids = torch.arange(requests)
+        request = torch.cat((ids, torch.repeat_interleave(ids, others)))    # first partitions, then the others
+        used = request.numel()
+        index[used:] = 0
+        index[:used, :4] = self._request_rows[request]
+        index[:used, 5] = (others + 1)[request]
+        index[:requests, 6] = 0
+        # A request's other partitions are consecutive rows: 1, 2, ... after those of the earlier requests.
+        index[requests:used, 6] = (torch.arange(1, used - requests + 1)
+                                   - torch.repeat_interleave(torch.cumsum(others, 0) - others, others))
+        self._row_request, self._counts = request, counts
+
     def _publish(self, lengths) -> None:
         requests, rows = len(lengths), self._rows
         index = self._host[:rows * 7].view(rows, 7)
         tiles = self._host[rows * 7:].view(requests, 6)
         blocks = tuple((n + _BLOCK - 1) // _BLOCK for n in lengths)
-        values = torch.tensor(lengths, dtype=torch.int32)
         if blocks != self._blocks:
-            # The share of rows per request follows the KV blocks: lay the rows out again.
+            # The share of rows per request follows the KV blocks; the rows are laid out again only when a
+            # share changes (a token more per request seldom moves one).
             counts = heads_in_rows_partition_counts(lengths, rows)
-            flat = index_work_rows((_INDEX_HEADS,) * requests, self._capacities, lengths, counts, rows)
-            index.copy_(torch.tensor(flat, dtype=torch.int32).view(rows, 7))
-            self._row_request = torch.tensor(
-                list(range(requests)) + [request for request, count in enumerate(counts)
-                                         for _ in range(count - 1)], dtype=torch.int64)
-            tiles.copy_(torch.tensor(attention_tiles(self._capacities, lengths), dtype=torch.int32).view(-1, 6))
+            if counts != self._counts:
+                self._lay_out(index, counts)
             self._blocks = blocks
-        else:
-            # Same rows: only the lengths change (a token more per request).
-            index[:self._row_request.numel(), 4] = values[self._row_request]
-            tiles[:, 5] = self._k_begin + values
+        values = torch.tensor(lengths, dtype=torch.int32)
+        index[:self._row_request.numel(), 4] = values[self._row_request]
+        tiles[:, 5] = self._k_begin + values
         self._lengths = tuple(lengths)
         self._tables.copy_(self._host)
 

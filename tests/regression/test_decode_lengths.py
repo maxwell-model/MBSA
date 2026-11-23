@@ -25,7 +25,7 @@ from mbsa.backends.optimized.index_policy import (HEADS_IN_ROWS_CTAS_PER_SM, HEA
                                                   heads_in_rows_partition_counts, heads_in_rows_work_rows,
                                                   index_dispatch_override, resolve_index_dispatch)
 from mbsa.backends.optimized.kernels.attention import QUERY_OUTER_MAX_SPLITS, query_outer_splits
-from mbsa.backends.optimized.kv_lengths import index_work_rows
+from mbsa.backends.optimized.kv_lengths import attention_tiles, index_work_rows
 from tests.common import BackendCaseMixin
 from tests.regression.test_decode_steps import decode_fixture, decode_reference
 
@@ -130,6 +130,27 @@ class DecodeLengths(BackendCaseMixin, unittest.TestCase):
             lengths.set(step)
             self.assert_identical(pipeline.run_mega(), self.fresh(inputs, rows, step))
         self.compare(pipeline.run_mega(), decode_reference(inputs, rows, skewed))
+
+    def test_set_keeps_the_tables_of_a_new_layout(self):
+        # set() lays the Index rows out again only when a request's share of them changes, and otherwise writes
+        # the lengths alone: after any sequence of steps both tables are those of the lengths' own layout.
+        generator = torch.Generator().manual_seed(11)
+        for batch in (1, 13, 50):
+            with self.subTest(batch=batch):
+                capacities = (CAPACITY,) * batch
+                lengths = KvLengths("cuda")
+                lengths._bind(capacities)
+                kv_lens = [int(n) for n in torch.randint(1, CAPACITY + 1, (batch,), generator=generator)]
+                for _ in range(200):     # a token more, a few blocks more, or a new and shorter request
+                    grow = torch.randint(0, 3, (batch,), generator=generator) * torch.randint(
+                        1, 400, (batch,), generator=generator)
+                    kv_lens = [n + int(g) if n + int(g) <= CAPACITY else 1 + int(g) for n, g in zip(kv_lens, grow)]
+                    lengths.set(kv_lens)
+                    counts = heads_in_rows_partition_counts(kv_lens, lengths._rows)
+                    expected = (index_work_rows((4,) * batch, capacities, kv_lens, counts, lengths._rows)
+                                + attention_tiles(capacities, kv_lens))
+                    self.assertEqual(lengths._host.tolist(), expected)
+                    self.assertTrue(torch.equal(lengths._tables.cpu(), lengths._host))
 
     def test_one_captured_graph_serves_every_step(self):
         pipeline, lengths, inputs, rows = self.capacity_step()

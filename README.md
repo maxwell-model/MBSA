@@ -217,16 +217,18 @@ plans = [prepare_cutedsl_pipeline(index_q[layer], index_k[layer], q[layer], k[la
                                   page_table=page_table, backend="optimized", kv_lengths=lengths)
          for layer in range(layers)]          # capture them, or the caller's graph, once
 for step in decode_steps:
-    lengths.set(step.kv_lens)                 # one host call per token, about 40 us for 32 requests
+    lengths.set(step.kv_lens)                 # one host call per token for all the layers
     for plan in plans:
         plan.run()                            # or replay the captured graph
 ```
 
 `request_lens` are then the requests' KV capacities and the page maps must hold
 valid page IDs over them; `set()` takes one length per request, from 1 to its
-capacity. It is a host-to-device copy on the current stream, so it returns once
-the work already queued on that stream has finished. The plans of a step share the
-lengths, so one call serves every layer. Results are bit-identical to a plan
+capacity. It recomputes the requests' shares of the Index launch on the host
+and copies two small tables to the device on the current stream, so it returns
+once the work already queued on that stream has finished: over a decode loop a
+call averages about 70 us for 32 requests and 0.35 ms for 200. The plans of a
+step share the lengths, so one call serves every layer. Results are bit-identical to a plan
 prepared for the lengths themselves. `kv_lengths` needs packed one-token
 requests (also for a single request), paged BF16 Q/K/V and a BF16, FP16 or
 E4M3 Index. `serving.Prefill` stages every step anew and runs eagerly; a decode

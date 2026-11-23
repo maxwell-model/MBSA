@@ -61,7 +61,8 @@ routed attention pass for plans and tiles they do not apply to.
 `tests/regression/test_decode_lengths.py` covers decode steps whose KV lengths
 are published with `serving.KvLengths` instead of a new preparation (bit
 identity with a plan prepared for the lengths, eager and through one captured
-CUDA graph, for a second plan of the step and for a rebound layer), batches of
+CUDA graph, for a second plan of the step and for a rebound layer; the tables
+`set()` writes against a new layout after every step), batches of
 1 to 32 requests whose attention tiles are split and combined (against the
 reference, including batches that share a compiled combine), batches whose
 Index work rows do not fill one wave of SMs (31 and 38 requests), a long
