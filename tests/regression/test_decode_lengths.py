@@ -20,7 +20,8 @@ import torch
 from mbsa import prepare_cutedsl_pipeline
 from mbsa.serving import KvLengths
 from mbsa.backends.optimized.index_policy import (HEADS_IN_ROWS_CTAS_PER_SM, HEADS_IN_ROWS_MERGE_PARTITIONS,
-                                                  HEADS_IN_ROWS_PARTITION_MIN_BLOCKS,
+                                                  HEADS_IN_ROWS_PARTITION_MIN_BLOCKS, HEADS_IN_ROWS_REQUEST_ROWS,
+                                                  HEADS_IN_ROWS_WAVE_GAIN, HEADS_IN_ROWS_WAVE_ROWS,
                                                   heads_in_rows_partition_counts, heads_in_rows_work_rows,
                                                   index_dispatch_override, resolve_index_dispatch)
 from mbsa.backends.optimized.kernels.attention import QUERY_OUTER_MAX_SPLITS, query_outer_splits
@@ -94,17 +95,19 @@ class DecodeLengths(BackendCaseMixin, unittest.TestCase):
                     self.assert_identical(pipeline.run(), self.fresh(inputs, rows, kv_lens))
                 self.compare(pipeline.run(), decode_reference(inputs, rows, STEPS[-1]))
 
-    def test_a_batch_whose_rows_would_outgrow_the_sms(self):
-        # 31 requests: five rows each would be 155 CTAs on 148 SMs; the launch keeps four.
-        kv_lens = tuple(300 + 1277 * i for i in range(31))
-        pipeline, lengths, inputs, rows = self.capacity_step(batch=31)
-        table = pipeline.plan._state.index.cutedsl_packed_router_tile_metadata
+    def test_batches_whose_rows_do_not_fill_one_wave(self):
+        # 31 requests keep four rows each (five would be 155 CTAs on 148 SMs); 38 take seven each, in two waves.
         sm_count = torch.cuda.get_device_properties(0).multi_processor_count
-        self.assertLessEqual(table.shape[0], max(31, sm_count))
-        for step in ((CAPACITY,) * 31, kv_lens):
-            lengths.set(step)
-            self.assert_identical(pipeline.run(), self.fresh(inputs, rows, step))
-        self.compare(pipeline.run(), decode_reference(inputs, rows, kv_lens))
+        for batch in (31, 38):
+            with self.subTest(batch=batch):
+                kv_lens = tuple(300 + 1000 * i for i in range(batch))
+                pipeline, lengths, inputs, rows = self.capacity_step(batch=batch)
+                table = pipeline.plan._state.index.cutedsl_packed_router_tile_metadata
+                self.assertEqual(table.shape[0], heads_in_rows_work_rows(batch, sm_count=sm_count))
+                for step in ((CAPACITY,) * batch, (CAPACITY,) + (300,) * (batch - 1), kv_lens):
+                    lengths.set(step)
+                    self.assert_identical(pipeline.run(), self.fresh(inputs, rows, step))
+                self.compare(pipeline.run(), decode_reference(inputs, rows, kv_lens))
 
     def test_one_captured_graph_serves_every_step(self):
         pipeline, lengths, inputs, rows = self.capacity_step()
@@ -209,18 +212,39 @@ class DecodeLengths(BackendCaseMixin, unittest.TestCase):
     def test_work_rows_share_the_launch_in_proportion_to_kv_blocks(self):
         for sm_count in (148, 132, 300):
             budget = -int(-HEADS_IN_ROWS_CTAS_PER_SM * sm_count // 1)
-            for batch in range(1, 2 * sm_count + 1):        # every batch: a launch must not outgrow the SMs
+
+            def waves(batch, per_request):      # the model of heads_in_rows_work_rows, in request-lengths
+                full, last = divmod(batch * per_request, sm_count)
+                return (full * sm_count + (max(last, budget) if last else 0)) / (per_request * sm_count)
+
+            for batch in range(1, 3 * sm_count + 1):        # every batch size, not a sample of them
                 rows = heads_in_rows_work_rows(batch, sm_count=sm_count)
-                self.assertEqual(rows % batch, 0)
-                self.assertGreaterEqual(rows, batch)
-                # Never more rows than SMs while every request can keep a row of its own.
-                self.assertLessEqual(rows, max(batch, sm_count))
-                # The fewest whole rows per request that reach the budget, or the most that fit the SMs.
+                per_request = rows // batch
+                self.assertEqual(rows, batch * per_request)
+                self.assertGreaterEqual(per_request, 1)
                 fewest = -(-budget // batch)
-                self.assertEqual(rows // batch, fewest if batch * fewest <= sm_count else max(1, sm_count // batch))
-        self.assertEqual([heads_in_rows_work_rows(batch, sm_count=148)
-                          for batch in (1, 13, 24, 25, 29, 30, 31, 32, 40, 42, 50, 56, 63, 64, 75, 100, 148, 149)],
-                         [126, 130, 144, 125, 145, 120, 124, 128, 120, 126, 100, 112, 126, 128, 75, 100, 148, 149])
+                if batch * fewest <= sm_count:      # one wave reaches the budget
+                    self.assertEqual(per_request, fewest)
+                    continue
+                self.assertLessEqual(per_request, max(HEADS_IN_ROWS_WAVE_ROWS, sm_count // batch))
+                # No launch that fits one wave, and none of the wave counts, is predicted to be faster by more
+                # than the margin; a launch of several waves is taken only for that margin.
+                best = min(waves(batch, count) for count in range(1, HEADS_IN_ROWS_WAVE_ROWS + 1))
+                one_wave = sm_count // batch
+                if one_wave:
+                    self.assertLessEqual(waves(batch, per_request), waves(batch, one_wave) + 1e-12)
+                    if per_request != one_wave:
+                        self.assertLessEqual(waves(batch, per_request),
+                                             HEADS_IN_ROWS_WAVE_GAIN * waves(batch, one_wave))
+                    else:
+                        self.assertGreater(best, HEADS_IN_ROWS_WAVE_GAIN * waves(batch, one_wave) - 1e-12)
+                else:
+                    self.assertAlmostEqual(waves(batch, per_request), best)
+        # B300: the measured fastest rows per request (25 to 148 requests; 40, 95, 120 and 125 within 5 %).
+        self.assertEqual([heads_in_rows_work_rows(batch, sm_count=148) // batch
+                          for batch in (1, 13, 24, 25, 29, 30, 31, 32, 38, 40, 42, 50, 54, 56, 60, 63, 64, 70,
+                                        75, 80, 85, 90, 100, 110, 125, 130, 148, 150)],
+                         [126, 10, 6, 5, 5, 4, 4, 4, 7, 3, 3, 8, 8, 5, 2, 2, 2, 2, 7, 7, 5, 8, 7, 4, 1, 1, 1, 8])
         self.assertEqual(heads_in_rows_partition_counts((8192,) * 32, 128), [4] * 32)
         skewed = heads_in_rows_partition_counts((1048576,) + (8192,) * 31, 128)
         self.assertEqual((sum(skewed), skewed[0], min(skewed)), (128, 78, 1))
@@ -232,12 +256,13 @@ class DecodeLengths(BackendCaseMixin, unittest.TestCase):
                          [1, 3, 17, 32, 32, 64, 114, 125])
         generator = torch.Generator().manual_seed(7)
         for _ in range(200):
-            batch = int(torch.randint(1, 70, (1,), generator=generator))
+            batch = int(torch.randint(1, 160, (1,), generator=generator))
             kv_lens = [int(n) for n in torch.randint(1, 1048577, (batch,), generator=generator)]
             rows = heads_in_rows_work_rows(batch, sm_count=148)
             counts = heads_in_rows_partition_counts(kv_lens, rows)
             blocks = [(n + 127) // 128 for n in kv_lens]
-            limits = [min(b, max(HEADS_IN_ROWS_MERGE_PARTITIONS, -(-b // HEADS_IN_ROWS_PARTITION_MIN_BLOCKS)))
+            limits = [min(b, HEADS_IN_ROWS_REQUEST_ROWS,
+                          max(HEADS_IN_ROWS_MERGE_PARTITIONS, -(-b // HEADS_IN_ROWS_PARTITION_MIN_BLOCKS)))
                       for b in blocks]
             self.assertTrue(all(1 <= c <= limit for c, limit in zip(counts, limits)))
             self.assertLessEqual(sum(counts), rows)

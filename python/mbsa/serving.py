@@ -202,8 +202,8 @@ class Limits:
         return total
 
 
-# Bounds of the decode-like path for devices of up to 300 SMs (index_policy.heads_in_rows_work_rows gives a
-# launch fewer than 0.85 * SMs rows beyond its requests; attention.query_outer_splits at most SMs / 4 states).
+# Bounds of the decode-like path: a request owns at most index_policy.HEADS_IN_ROWS_REQUEST_ROWS rows of a
+# heads-in-rows launch; attention.query_outer_splits gives at most SMs / 4 states (devices of up to 300 SMs).
 DECODE_INDEX_ROWS = 256
 DECODE_SPLIT_STATES = 256
 
@@ -223,11 +223,9 @@ def _optimized_extra_bytes(limits: Limits, tokens: int, rows: int, partitions: i
         + tokens * (KV_HEADS * Q_HEADS * 4 + KV_HEADS * DYNAMIC_PAGES * 4)
         # CSR histogram scratch: at most 4 warps per 128-query CTA group.
         + 4 * KV_HEADS * 4 * _ceil_div(tokens, 128) * rows
-        # Decode-like steps: the partition buffers of a heads-in-rows Index launch (fewer than
-        # DECODE_INDEX_ROWS requests share that many spare rows, so no request owns more partitions; a larger
-        # batch has one each) and the split attention states (at most DECODE_SPLIT_STATES per step).
-        + 2 * KV_HEADS * DYNAMIC_PAGES * 4 * (
-            min(decode_requests, DECODE_INDEX_ROWS) * DECODE_INDEX_ROWS + decode_requests)
+        # Decode-like steps: the partition buffers of a heads-in-rows Index launch (no request owns more than
+        # DECODE_INDEX_ROWS partitions) and the split attention states (at most DECODE_SPLIT_STATES per step).
+        + 2 * KV_HEADS * DYNAMIC_PAGES * 4 * (decode_requests * DECODE_INDEX_ROWS + decode_requests)
         + DECODE_SPLIT_STATES * Q_HEADS * (HEAD_DIM * 2 + 4)
     )
     if kv_dtype == torch.float8_e4m3fn:

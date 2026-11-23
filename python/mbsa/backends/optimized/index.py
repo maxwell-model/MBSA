@@ -23,7 +23,7 @@ from .index_policy import (select_partition_blocks, lean192_index_eligible, two_
                            BASELINE_INDEX_DISPATCH, FINE_PARTITION_BLOCKS, FINE_PARTITION_MAX_PARTITIONS,
                            SKIP_FIXED_MAX_KV_TOKENS, FP8_TWO_SM_MIN_KV_TOKENS, FP8_TWO_SM_MIN_PARTITION_BLOCKS,
                            SERIAL_MERGE_MAX_PARTITIONS, EVEN_SPLIT_PARTITION_BLOCKS,
-                           heads_in_rows_work_rows, heads_in_rows_partition_counts)
+                           heads_in_rows_work_rows, heads_in_rows_partition_counts, HEADS_IN_ROWS_REQUEST_ROWS)
 from .._binding import explicit_device
 from .._index_options import resolve_lean192, validate_lean192
 
@@ -202,10 +202,10 @@ def bind_score_operands(plan):
             capacities = tuple(kv_len for _, kv_len in requests)
             if plan.kv_lengths is not None:
                 # The lengths change from step to step: the launch keeps every row, and a request can take
-                # all the rows the others leave.
+                # the rows the others leave, up to HEADS_IN_ROWS_REQUEST_ROWS.
                 grid_rows = heads_in_rows_work_rows(len(requests), sm_count=sm_count())
                 table = plan.kv_lengths._index_rows(row_groups, grid_rows)
-                partitions = min(grid_rows - len(requests) + 1,
+                partitions = min(grid_rows - len(requests) + 1, HEADS_IN_ROWS_REQUEST_ROWS,
                                  max((kv_len + SPEC.block_size - 1) // SPEC.block_size for kv_len in capacities))
             else:
                 key = (requests, "work_rows")

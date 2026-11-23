@@ -5,6 +5,7 @@ import bisect
 import contextlib
 import contextvars
 import dataclasses
+from fractions import Fraction
 import functools
 import os
 
@@ -404,20 +405,46 @@ HEADS_IN_ROWS_MERGE_PARTITIONS = 32
 HEADS_IN_ROWS_PARTITION_MIN_BLOCKS = 8
 
 
-def heads_in_rows_work_rows(batch, *, sm_count=148):
-    """Work rows (CTAs) of a heads-in-rows launch of `batch` requests.
+# A launch whose rows do not fit one wave of SMs: at most this many rows per request, taken only when the wave
+# model below predicts at least this gain over the largest launch that fits the SMs (finer rows cost a few
+# percent at 8K KV tokens: 125 requests 234 -> 245 us with seven rows each).
+HEADS_IN_ROWS_WAVE_ROWS = 8
+HEADS_IN_ROWS_WAVE_GAIN = 0.95
+# The most rows one request owns (the extent of the partition buffers, serving.DECODE_INDEX_ROWS).
+HEADS_IN_ROWS_REQUEST_ROWS = 256
 
-    A whole number of rows per request (equal KV lengths then get equal shares): the fewest that put
-    HEADS_IN_ROWS_CTAS_PER_SM CTAs on every SM, but never more rows than SMs while a request can keep a row
-    of its own. A row beyond the SM count waits for an SM, which costs more than the SMs a smaller whole
-    number leaves idle (B300, 256K KV per request: 25 requests take 404 us with 150 rows and 295 us with
-    125; 50 requests 801 us with 150 and 621 us with 100). Pure host arithmetic.
+
+def heads_in_rows_work_rows(batch, *, sm_count=148):
+    """Work rows (CTAs) of a heads-in-rows launch of `batch` requests: a whole number per request, so that
+    equal KV lengths get equal shares.
+
+    The launch is memory-bound: HEADS_IN_ROWS_CTAS_PER_SM CTAs per SM draw the full bandwidth, and the rows run
+    in waves of sm_count. The fewest rows per request that reach that budget are taken when they fit one wave.
+    Otherwise a wave that is not full wastes time: with p rows per request the launch takes
+    (full waves + max(rows of the last wave, budget) / sm_count) / p request-lengths. The largest count that
+    fits one wave is kept unless one of 1..HEADS_IN_ROWS_WAVE_ROWS rows per request is predicted
+    HEADS_IN_ROWS_WAVE_GAIN of its time or less; batches beyond the SM count take the best of those.
+
+    B300 (148 SMs), one captured graph, 256K KV tokens per request, by rows per request: 25 requests 404 us with
+    six (150 rows: two CTAs wait for an SM) and 295 us with five; 50 requests 801 us with three, 616 with two,
+    581 with eight (two full waves and 104); 75 requests 1085 us with one, 1197 with two, 879 with seven;
+    90 requests 1178 with one, 1004 with eight; 130 and 148 requests are fastest with one. The model picks the
+    fastest measured count of every batch swept (38 to 148 requests). Pure host arithmetic.
     """
     budget = -int(-HEADS_IN_ROWS_CTAS_PER_SM * sm_count // 1)
     per_request = max(1, -(-budget // batch))
-    if batch * per_request > sm_count:
-        per_request = max(1, sm_count // batch)
-    return batch * per_request
+    if batch * per_request <= sm_count:
+        return batch * per_request
+
+    def waves(rows_per_request):   # time in request-lengths at full bandwidth, as an exact fraction
+        full, last = divmod(batch * rows_per_request, sm_count)
+        return Fraction(full * sm_count + (max(last, budget) if last else 0), rows_per_request * sm_count)
+
+    best = min(range(1, HEADS_IN_ROWS_WAVE_ROWS + 1), key=lambda count: (waves(count), count))
+    one_wave = sm_count // batch
+    if one_wave and waves(best) > HEADS_IN_ROWS_WAVE_GAIN * waves(one_wave):
+        best = one_wave
+    return batch * best
 
 
 def heads_in_rows_partition_counts(kv_lens, rows):
@@ -425,13 +452,14 @@ def heads_in_rows_partition_counts(kv_lens, rows):
 
     One each; the other rows in proportion to a request's KV blocks beyond its first (largest remainders first,
     ties to the earlier request), which equalises the blocks per partition. A request takes at most one
-    partition per KV block, and beyond HEADS_IN_ROWS_MERGE_PARTITIONS only partitions of at least
-    HEADS_IN_ROWS_PARTITION_MIN_BLOCKS blocks; the rows it leaves go to the other requests in the same
-    proportion. Partitions are equal multiples of a block, so a request keeps only as many as hold one;
-    some rows may stay unused. Pure host arithmetic.
+    partition per KV block, beyond HEADS_IN_ROWS_MERGE_PARTITIONS only partitions of at least
+    HEADS_IN_ROWS_PARTITION_MIN_BLOCKS blocks, and never more than HEADS_IN_ROWS_REQUEST_ROWS; the rows it
+    leaves go to the other requests in the same proportion. Partitions are equal multiples of a block, so a
+    request keeps only as many as hold one; some rows may stay unused. Pure host arithmetic.
     """
     blocks = [(int(n) + 127) // 128 for n in kv_lens]
-    limit = [min(count, max(HEADS_IN_ROWS_MERGE_PARTITIONS, -(-count // HEADS_IN_ROWS_PARTITION_MIN_BLOCKS))) - 1
+    limit = [min(count, HEADS_IN_ROWS_REQUEST_ROWS,
+                 max(HEADS_IN_ROWS_MERGE_PARTITIONS, -(-count // HEADS_IN_ROWS_PARTITION_MIN_BLOCKS))) - 1
              for count in blocks]
     extra = [0] * len(blocks)
     open_ = [i for i, value in enumerate(limit) if value]
