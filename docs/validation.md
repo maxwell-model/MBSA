@@ -63,8 +63,11 @@ are published with `serving.KvLengths` instead of a new preparation (bit
 identity with a plan prepared for the lengths, eager and through one captured
 CUDA graph, for a second plan of the step and for a rebound layer), batches of
 1 to 32 requests whose attention tiles are split and combined (against the
-reference, including batches that share a compiled combine), and the policies
-that share the Index work rows and choose the split count. `test_index_dispatch` also checks that steps after
+reference, including batches that share a compiled combine), batches whose
+Index work rows do not fill one wave of SMs (31 and 38 requests), a long
+request that reaches the most rows one request may own (50 requests), and the
+policies that size and share the Index work rows, for every batch size, and
+choose the split count. `test_index_dispatch` also checks that steps after
 `serving.warmup` compile no Index router kernel with the default dispatch and
 with the baseline selection (the one SM100 binds), and that runner and warmup
 caches are kept per GPU.

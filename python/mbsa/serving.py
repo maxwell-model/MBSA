@@ -10,8 +10,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import accumulate
 import math
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:     # loaded on first use at run time, see __getattr__
+    from .backends.optimized.kv_lengths import KvLengths
 
 Q_HEADS, KV_HEADS, HEAD_DIM, PAGE_SIZE = 32, 4, 128, 128
 PREFIX_PAGES, DYNAMIC_PAGES, LOCAL_PAGES = 8, 16, 8
@@ -202,9 +206,8 @@ class Limits:
         return total
 
 
-# Bounds of the decode-like path: a request owns at most index_policy.HEADS_IN_ROWS_REQUEST_ROWS rows of a
-# heads-in-rows launch; attention.query_outer_splits gives at most SMs / 4 states (devices of up to 300 SMs).
-DECODE_INDEX_ROWS = 256
+# Bound of the decode-like path: attention.query_outer_splits gives at most SMs / 4 states (devices of up to
+# 300 SMs).
 DECODE_SPLIT_STATES = 256
 
 
@@ -213,7 +216,7 @@ def _optimized_extra_bytes(limits: Limits, tokens: int, rows: int, partitions: i
     """Optimized-backend buffers beyond the default estimate.
 
     ``rows`` bounds the step's logical KV pages, pieces included."""
-    from .backends.optimized.index_policy import FINE_PARTITION_MAX_PARTITIONS
+    from .backends.optimized.index_policy import FINE_PARTITION_MAX_PARTITIONS, HEADS_IN_ROWS_REQUEST_ROWS
 
     decode_requests = min(tokens, limits.max_requests)
     extra = (
@@ -224,8 +227,9 @@ def _optimized_extra_bytes(limits: Limits, tokens: int, rows: int, partitions: i
         # CSR histogram scratch: at most 4 warps per 128-query CTA group.
         + 4 * KV_HEADS * 4 * _ceil_div(tokens, 128) * rows
         # Decode-like steps: the partition buffers of a heads-in-rows Index launch (no request owns more than
-        # DECODE_INDEX_ROWS partitions) and the split attention states (at most DECODE_SPLIT_STATES per step).
-        + 2 * KV_HEADS * DYNAMIC_PAGES * 4 * (decode_requests * DECODE_INDEX_ROWS + decode_requests)
+        # HEADS_IN_ROWS_REQUEST_ROWS partitions) and the split attention states (at most DECODE_SPLIT_STATES
+        # per step).
+        + 2 * KV_HEADS * DYNAMIC_PAGES * 4 * (decode_requests * HEADS_IN_ROWS_REQUEST_ROWS + decode_requests)
         + DECODE_SPLIT_STATES * Q_HEADS * (HEAD_DIM * 2 + 4)
     )
     if kv_dtype == torch.float8_e4m3fn:

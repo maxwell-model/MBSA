@@ -44,7 +44,7 @@ On a supported Blackwell GPU with the documented dependencies:
 
 ```bash
 python -m unittest -v tests.regression.test_customer_review
-python -m unittest -v tests.regression.test_decode_steps tests.regression.test_index_dispatch
+python -m unittest -v tests.regression.test_decode_steps tests.regression.test_decode_lengths tests.regression.test_index_dispatch
 python -m unittest -v tests.regression.test_backends tests.regression.test_fixed_fa4
 python -m unittest -v tests.smoke.test_direct_page_map tests.smoke.test_imports
 ```

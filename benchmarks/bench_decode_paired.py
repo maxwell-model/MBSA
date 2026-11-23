@@ -7,9 +7,10 @@ bench/bench_top32_chain.py provides DecodeStep, a batch of one-token requests wi
 seq_lens and run_chain(). MBSA binds views of those tensors, so both sides read the same Q, K/V,
 Index K and pages, and every row reports how far the two outputs are apart.
 
-Timing alternates blocks of back-to-back runs (MBSA x block, reference x block, the next round in
-the opposite order), every run between one CUDA event pair on its own stream. A row holds the median
-and the minimum of each side and the speedup, reference median / MBSA median: above 1 is faster.
+Timing alternates blocks of runs (MBSA x block, reference x block, the next round in the opposite
+order). Every run is one sample: a CUDA event pair on its side's stream, waited for before the next
+run starts. A row holds the median and the minimum of each side and the speedup, reference median /
+MBSA median: above 1 is faster.
 
 Modes
   capacity_graph, capacity_eager  both sides are prepared (and captured) once at --capacity. Before a
@@ -62,7 +63,7 @@ def main():
     parser.add_argument('--seed', type=int, default=17)
     parser.add_argument('--warmups', type=int, default=20)
     parser.add_argument('--rounds', type=int, default=6)
-    parser.add_argument('--block', type=int, default=10, help='back-to-back runs of one side per round')
+    parser.add_argument('--block', type=int, default=10, help='consecutive runs of one side per round')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     modes = args.modes.split(',')
@@ -77,23 +78,26 @@ def main():
         parser.error('--reference-root has no bench/bench_top32_chain.py')
     if args.output.exists():
         parser.error('output exists; use a new evidence path')
-    sys.path.insert(0, str(args.reference_root.resolve()))
-    import _paths  # noqa: F401  (the reference checkout's import bootstrap)
-    import torch
-    from bench.bench_top32_chain import DecodeStep
-    from mbsa import prepare_cutedsl_pipeline
-    from mbsa.serving import KvLengths
-
     cases = [(f'{n}', [n] * args.batch) for n in lengths if n <= args.capacity]
     if args.ragged:
         cases += ragged_cases(args.batch, args.capacity)
+    if not cases:
+        parser.error('no case: every length is above the capacity')
+    import torch
+    import mbsa     # this checkout's, before the reference's import paths are added
+    from mbsa import prepare_cutedsl_pipeline
+    from mbsa.serving import KvLengths
+    sys.path.insert(0, str(args.reference_root.resolve()))
+    import _paths  # noqa: F401  (the reference checkout's import bootstrap)
+    from bench.bench_top32_chain import DecodeStep
+
     props = torch.cuda.get_device_properties(0)
     result = dict(contract=dict(batch=args.batch, query_tokens_per_request=1, kv_capacity=args.capacity,
         seed=args.seed, warmups=args.warmups, rounds=args.rounds, block=args.block,
-        reference=str(args.reference_root.resolve()), gpu=props.name, sm_count=props.multi_processor_count,
-        uuid=str(props.uuid), torch=str(torch.__version__),
-        timing='alternating blocks of back-to-back runs, one CUDA event pair per run on the side\'s own stream; '
-               'median and minimum per side; speedup = reference median / MBSA median',
+        reference=str(args.reference_root.resolve()), mbsa=str(Path(mbsa.__file__).resolve().parent),
+        gpu=props.name, sm_count=props.multi_processor_count, uuid=str(props.uuid), torch=str(torch.__version__),
+        timing='alternating blocks of runs, each timed by one CUDA event pair on its side\'s stream and waited '
+               'for before the next; median and minimum per side; speedup = reference median / MBSA median',
         tensors='the reference step owns Q, K/V, Index K and the page table; MBSA binds views of them'), rows=[])
     print(json.dumps(result['contract']), flush=True)
 

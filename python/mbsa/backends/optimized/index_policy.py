@@ -389,10 +389,10 @@ FINE_PARTITION_MAX_EMPTY_SHARE = 0.5
 SERIAL_MERGE_MAX_PARTITIONS = 16
 # Heads-in-rows launches (IndexDispatch.heads_in_rows) are a list of work rows, one CTA each: a row is one
 # partition of one request, and the router divides the request's own KV blocks equally among its partitions at
-# run time (IndexerLocalTop16Sm100.even_split). Their time is the Index K read, not the UMMA: the launch has
-# the fewest rows that give every SM this many CTAs, so that it reads K at the device's memory bandwidth. B300
-# (148 SMs), 32 requests: 128 CTAs already do; 64 CTAs read 256K tokens per request 1.4x slower; 256 or 512
-# are no faster and only lengthen the merge. The rows a request gets follow the KV lengths of the step, not
+# run time (IndexerLocalTop16Sm100.even_split). Their time is the Index K read, not the UMMA: this many CTAs
+# per SM already read K at the device's memory bandwidth, and heads_in_rows_work_rows sizes the launch by it.
+# B300 (148 SMs), 32 requests: 128 CTAs do; 64 CTAs read 256K tokens per request 1.4x slower; 256 or 512 are
+# no faster and only lengthen the merge. The rows a request gets follow the KV lengths of the step, not
 # the lengths the launch was prepared for, so one captured launch serves every length up to its capacity.
 HEADS_IN_ROWS_CTAS_PER_SM = 0.85
 # The compiled partition width is unused by an even split; one value keeps one kernel.
@@ -405,12 +405,13 @@ HEADS_IN_ROWS_MERGE_PARTITIONS = 32
 HEADS_IN_ROWS_PARTITION_MIN_BLOCKS = 8
 
 
-# A launch whose rows do not fit one wave of SMs: at most this many rows per request, taken only when the wave
-# model below predicts at least this gain over the largest launch that fits the SMs (finer rows cost a few
-# percent at 8K KV tokens: 125 requests 234 -> 245 us with seven rows each).
+# A launch whose rows do not fit one wave of SMs runs in several, with at most HEADS_IN_ROWS_WAVE_ROWS rows per
+# request, only when the wave model below puts its time at HEADS_IN_ROWS_WAVE_TIME of the largest one-wave
+# launch's or less (finer rows cost a few percent at 8K KV tokens: 125 requests 234 -> 245 us with six rows
+# each).
 HEADS_IN_ROWS_WAVE_ROWS = 8
-HEADS_IN_ROWS_WAVE_GAIN = 0.95
-# The most rows one request owns (the extent of the partition buffers, serving.DECODE_INDEX_ROWS).
+HEADS_IN_ROWS_WAVE_TIME = 0.95
+# The most rows one request owns: the extent of the partition buffers, which serving.Limits bounds with it.
 HEADS_IN_ROWS_REQUEST_ROWS = 256
 
 
@@ -418,31 +419,34 @@ def heads_in_rows_work_rows(batch, *, sm_count=148):
     """Work rows (CTAs) of a heads-in-rows launch of `batch` requests: a whole number per request, so that
     equal KV lengths get equal shares.
 
-    The launch is memory-bound: HEADS_IN_ROWS_CTAS_PER_SM CTAs per SM draw the full bandwidth, and the rows run
-    in waves of sm_count. The fewest rows per request that reach that budget are taken when they fit one wave.
-    Otherwise a wave that is not full wastes time: with p rows per request the launch takes
-    (full waves + max(rows of the last wave, budget) / sm_count) / p request-lengths. The largest count that
-    fits one wave is kept unless one of 1..HEADS_IN_ROWS_WAVE_ROWS rows per request is predicted
-    HEADS_IN_ROWS_WAVE_GAIN of its time or less; batches beyond the SM count take the best of those.
+    The launch is memory-bound: HEADS_IN_ROWS_CTAS_PER_SM CTAs per SM (the budget) draw the full bandwidth, and
+    the rows run in waves of sm_count. The fewest rows per request that reach the budget are taken when they
+    fit one wave. Otherwise a wave that is not full wastes time. With p rows per request a row reads 1/p of a
+    request, a full wave takes as long as sm_count rows and a last wave of n rows as long as max(n, budget) of
+    them, so the launch takes (full waves * sm_count + max(n, budget)) / (p * sm_count) times as long as one
+    full wave of rows that each read a whole request. The largest count that fits one wave is kept unless one
+    of 1..HEADS_IN_ROWS_WAVE_ROWS rows per request is predicted HEADS_IN_ROWS_WAVE_TIME of its time or less;
+    batches beyond the SM count take the best of those.
 
     B300 (148 SMs), one captured graph, 256K KV tokens per request, by rows per request: 25 requests 404 us with
     six (150 rows: two CTAs wait for an SM) and 295 us with five; 50 requests 801 us with three, 616 with two,
     581 with eight (two full waves and 104); 75 requests 1085 us with one, 1197 with two, 879 with seven;
-    90 requests 1178 with one, 1004 with eight; 130 and 148 requests are fastest with one. The model picks the
-    fastest measured count of every batch swept (38 to 148 requests). Pure host arithmetic.
+    90 requests 1178 with one, 1004 with eight; 130 and 148 requests are fastest with one. Over the batches
+    swept (38 to 148 requests, one to eight rows each) the count taken is the fastest measured one or within
+    5 % of it. Pure host arithmetic.
     """
     budget = -int(-HEADS_IN_ROWS_CTAS_PER_SM * sm_count // 1)
     per_request = max(1, -(-budget // batch))
     if batch * per_request <= sm_count:
         return batch * per_request
 
-    def waves(rows_per_request):   # time in request-lengths at full bandwidth, as an exact fraction
+    def waves(rows_per_request):   # the launch's time in those units, as an exact fraction
         full, last = divmod(batch * rows_per_request, sm_count)
         return Fraction(full * sm_count + (max(last, budget) if last else 0), rows_per_request * sm_count)
 
     best = min(range(1, HEADS_IN_ROWS_WAVE_ROWS + 1), key=lambda count: (waves(count), count))
     one_wave = sm_count // batch
-    if one_wave and waves(best) > HEADS_IN_ROWS_WAVE_GAIN * waves(one_wave):
+    if one_wave and waves(best) > HEADS_IN_ROWS_WAVE_TIME * waves(one_wave):
         best = one_wave
     return batch * best
 

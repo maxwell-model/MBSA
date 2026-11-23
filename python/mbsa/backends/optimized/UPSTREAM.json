@@ -526,7 +526,7 @@
       "path": "python/mbsa/backends/optimized/index_policy.py",
       "relationship": "locally-authored",
       "license": "Apache-2.0",
-      "local_sha256": "475689b3792b6eab5c1c871ea31a40950efabde0d9512fa2f58f5501a6997e9c"
+      "local_sha256": "d772dd8b33f5d90bbff096b708695663fb61a2ecdbca40f74aa556b14d94e579"
     },
     {
       "path": "python/mbsa/backends/optimized/src/common/pipeline.py",
