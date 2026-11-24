@@ -65,9 +65,11 @@ class DispatchResolution(unittest.TestCase):
             self.assertIs(self.resolve((10, 3)), forced)
         self.assertIs(self.resolve((10, 3)), AUTO_INDEX_DISPATCH)
         with index_dispatch():
-            self.assertEqual(self.resolve((10, 3)), IndexDispatch(
-                two_sm='0', skip_fixed='0', partitions='0', fp8_q256='0', parallel_insert=False,
-                queued_insert=False, fp8_two_sm='0', runtime_partitions=True))
+            self.assertEqual(self.resolve((10, 3)), BASELINE_INDEX_DISPATCH)
+        # The baseline selection takes the partition count at run time too: serving warmup compiles its kernels.
+        self.assertEqual(BASELINE_INDEX_DISPATCH, IndexDispatch(
+            two_sm='0', skip_fixed='0', partitions='0', fp8_q256='0', parallel_insert=False,
+            queued_insert=False, fp8_two_sm='0', runtime_partitions=True))
         with self.assertRaises(TypeError), index_dispatch_override({'two_sm': '1'}):
             pass
 
@@ -280,26 +282,113 @@ class DefaultDispatchPipeline(BackendCaseMixin, unittest.TestCase):
 class ServingWarmupCoverage(unittest.TestCase):
     """Serving warmup compiles the router kernels of every variant the dispatch binds for paged steps."""
 
-    def setUp(self):
-        if torch.cuda.get_device_capability() != (10, 3):
-            self.skipTest('the Index dispatch defaults to its variants on SM103 only')
+    # Short and long queries, finer partitions with serial and tree merges, packed steps and split pieces.
+    STEPS = (((17, 4113),), ((300, 131073),), ((1024, 262144),), ((2048, 655360),), ((8192, 1048576),),
+             ((17, 1048576),), ((128, 32768),), ((4096, 1000000),), ((17, 4113), (23, 2195), (41, 127)),
+             ((1024, 262144),) * 4, ((256, 65536),) * 16, ((3000, 32768), (5192, 200000)), ((9000, 40960),),
+             ((1, 524288),) * 32)
 
-    def test_steps_after_warmup_compile_no_router_kernel(self):
+    def setUp(self):
+        if torch.cuda.get_device_capability() not in ((10, 0), (10, 3)):
+            self.skipTest('the optimized backend requires SM100 or SM103')
+
+    def steps_compile_no_router_kernel(self, value, formats):
         from mbsa.backends.optimized.src.sm100 import router
         from mbsa.serving import Prefill, warmup
-        # Short and long queries, finer partitions with serial and tree merges, packed steps and split pieces.
-        steps = (((17, 4113),), ((300, 131073),), ((1024, 262144),), ((2048, 655360),), ((8192, 1048576),),
-                 ((17, 1048576),), ((128, 32768),), ((4096, 1000000),), ((17, 4113), (23, 2195), (41, 127)),
-                 ((1024, 262144),) * 4, ((256, 65536),) * 16, ((3000, 32768), (5192, 200000)), ((9000, 40960),))
-        with _environment(None):
-            for index_format in ('bf16', 'fp8'):
+        with _environment(value):
+            for index_format in formats:
                 with self.subTest(index_format=index_format):
                     prefill = Prefill(torch.device('cuda'), backend='optimized')
                     warmup(prefill, ((16, 4096),), index_format=index_format)
                     before = set(router._COMPILE_CACHE)
-                    for lengths in steps:
+                    for lengths in self.STEPS:
                         warmup(prefill, lengths, index_format=index_format)
                     self.assertEqual(set(router._COMPILE_CACHE) - before, set())
+
+    def test_steps_after_warmup_compile_no_router_kernel(self):
+        # The device's own dispatch: the default variants on SM103, the baseline selection on SM100.
+        self.steps_compile_no_router_kernel(None, ('bf16', 'fp8'))
+
+    def test_baseline_steps_after_warmup_compile_no_router_kernel(self):
+        # Every partition count of the baseline selection (FP16 Index always binds it) runs the warmed-up kernels.
+        self.steps_compile_no_router_kernel('baseline', ('bf16', 'fp16', 'fp8'))
+
+
+class DeviceKeys(unittest.TestCase):
+    """A bare "cuda" names the current GPU: runner and warmup caches are per GPU."""
+
+    @staticmethod
+    def current(index):
+        """torch.cuda as an initialized runtime whose current device is index."""
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch('torch.cuda.is_initialized', return_value=True))
+        stack.enter_context(mock.patch('torch.cuda.current_device', return_value=index))
+        return stack
+
+    def test_bare_cuda_resolves_to_the_current_device(self):
+        from mbsa.backends._binding import explicit_device
+        with self.current(3):
+            for device in ('cuda', torch.device('cuda')):
+                self.assertEqual(explicit_device(device), torch.device('cuda', 3))
+            self.assertEqual(explicit_device('cuda:1'), torch.device('cuda', 1))
+        self.assertEqual(explicit_device('cpu'), torch.device('cpu'))
+
+    def test_a_runner_is_built_without_initializing_cuda(self):
+        # Until CUDA is initialized the current device is 0; asking torch for it would initialize CUDA in
+        # a process that only builds its runner (before forking workers, say).
+        from mbsa import serving
+        from mbsa.backends._binding import explicit_device
+        with mock.patch('torch.cuda.is_initialized', return_value=False), \
+                mock.patch('torch.cuda.current_device', side_effect=AssertionError('initializes CUDA')), \
+                mock.patch.dict(serving._RUNNERS, clear=True):
+            self.assertEqual(explicit_device('cuda'), torch.device('cuda', 0))
+            self.assertEqual(serving.runner('cuda', backend='optimized').device, torch.device('cuda', 0))
+            self.assertEqual(serving.Prefill('cuda', backend='optimized').device, torch.device('cuda', 0))
+
+    def test_runner_cache_is_per_gpu(self):
+        from mbsa import serving
+        with mock.patch.dict(serving._RUNNERS, clear=True):
+            with self.current(0):
+                first = serving.runner('cuda', backend='optimized')
+                self.assertIs(first, serving.runner('cuda:0', backend='optimized'))
+            with self.current(1):
+                second = serving.runner('cuda', backend='optimized')
+                self.assertIs(second, serving.runner(torch.device('cuda'), backend='optimized'))
+            self.assertIsNot(first, second)
+            self.assertEqual((first.device, second.device), (torch.device('cuda', 0), torch.device('cuda', 1)))
+
+    def test_warmup_record_is_per_gpu(self):
+        from mbsa.backends.optimized import index
+        calls = []
+
+        def variants(dispatch, fp8, max_kv_tokens):
+            calls.append(torch.cuda.current_device())
+            return iter(())
+
+        with mock.patch.object(index, '_COMPILED_SERVING_VARIANTS', set()) as done, \
+                mock.patch.object(index, '_serving_router_variants', variants), \
+                index_dispatch_override(AUTO_INDEX_DISPATCH):
+            for current in (0, 1, 1, 0):
+                with self.current(current):
+                    index.compile_serving_index_variants('cuda', torch.bfloat16, max_kv_tokens=1 << 20)
+            self.assertEqual(calls, [0, 1])
+            self.assertEqual({key[0] for key in done}, {0, 1})
+
+    @unittest.skipUnless(torch.cuda.device_count() >= 2, 'two GPUs required')
+    def test_second_gpu_compiles_its_own_router_kernels(self):
+        if torch.cuda.get_device_capability() not in ((10, 0), (10, 3)):
+            self.skipTest('the optimized backend requires SM100 or SM103')
+        from mbsa.backends.optimized.src.sm100 import router
+        from mbsa.serving import Prefill, warmup
+        with _environment(None):
+            for ordinal in (0, 1):
+                with torch.cuda.device(ordinal):
+                    warmup(Prefill('cuda', backend='optimized'), ((16, 4096),), index_format='bf16')
+        # Earlier tests of the process may have compiled more kernels for GPU 0: compare the variants.
+        compiled = [{key[2:] for key in router._COMPILE_CACHE if key[0] == ordinal and key[1] == torch.bfloat16}
+                    for ordinal in (0, 1)]
+        self.assertGreater(len(compiled[1]), 1)
+        self.assertLessEqual(compiled[1], compiled[0])
 
 
 if __name__ == '__main__':

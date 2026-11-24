@@ -22,6 +22,18 @@ default BF16 behavior. They do not add a NaN scan or output reconstruction.
 - Packed subtraction uses the public CuTe primitive instead of a private QuACK
   helper. This does not change the pinned dependency stack.
 
+- Steps of one-token requests (decode-like) run query-outer on the optimized
+  backend: the Index stage and one attention pass over fixed and routed blocks.
+  The CSR of the KV-outer path, whose histogram was sized by the KV blocks of
+  the whole batch, is not built, so 32 requests of 512K or 1M KV tokens prepare
+  and run. For other packed steps the CSR builder splits its histogram and
+  scatter into row ranges instead of rejecting more than 116,224 KV blocks.
+- The baseline Index selection (SM100, `MBSA_INDEX_DISPATCH=baseline`, FP16
+  Index) takes the KV partition count at run time like the default dispatch,
+  and `serving.warmup` compiles its router kernels too.
+- Runner and Index warmup caches key on the resolved GPU index: a bare `cuda`
+  device no longer stands for two GPUs.
+
 Logical nonfinite inputs do not impose masked-input NaN isolation. Physical
 padding and unused partial slots must remain excluded. Tests distinguish these
 cases rather than requiring every poisoned request to produce finite output.
@@ -32,6 +44,7 @@ On a supported Blackwell GPU with the documented dependencies:
 
 ```bash
 python -m unittest -v tests.regression.test_customer_review
+python -m unittest -v tests.regression.test_decode_steps tests.regression.test_decode_lengths tests.regression.test_index_dispatch
 python -m unittest -v tests.regression.test_backends tests.regression.test_fixed_fa4
 python -m unittest -v tests.smoke.test_direct_page_map tests.smoke.test_imports
 ```

@@ -205,6 +205,13 @@ class _State:
 
     def run_plan(self):
         a, p = self.attention, self.index
+        if a.query_outer:
+            # The query-outer pass reads the route itself. An Index launch that merges into the compact
+            # candidate plane ([H,16:32,T], best first, -1 padding) publishes it here.
+            if not p.route_published:
+                a.tile_plan.dynamic_route.copy_(
+                    p.candidate_storage.view(torch.int32)[:, 16:32].transpose(1, 2))
+            return
         if not a.fixed_only:
             # The MBSA scorer merges all partitions before publishing these
             # IDs. The attention consumer receives one globally selected candidate
@@ -221,14 +228,13 @@ class _State:
         # CuTe launches bypass PyTorch's dispatcher. Protect every backing
         # allocation on the actual eager launch stream, including plan-owned
         # CSR/partials when a caller drops a plan with work still queued.
+        a, p = self.attention, self.index
+        current = torch.cuda.current_stream(a.q.device)
         if not torch.cuda.is_current_stream_capturing():
-            current = torch.cuda.current_stream(self.attention.q.device)
             self._record_eager_storage(current)
         self._refresh()
-        a, p = self.attention, self.index
         if a.fixed_only:
             return a.run()
-        current = torch.cuda.current_stream(a.q.device)
         if self.fixed_stream is not None and current != self.fixed_stream:
             self.inputs_ready.record(current)
             # Preserve the score-first enqueue policy; both streams join
@@ -462,13 +468,14 @@ class PreparedOwner(PreparedOwnerBase):
         if check_pages and p.cutedsl_index_pages is not None:
             p.cutedsl_use_page_table = True
             p._lean192_early_router = False
-        from .index import bind_score_operands
+        from .index import bind_score_operands, require_kv_lengths_launch
         from .page_map import bind_page_operands
         bind_page_operands(p, rows)
         if p.mxfp6_router is not None:
             p.mxfp6_router = copy.copy(p.mxfp6_router)
             p.mxfp6_router.rebind(index_q, index_q_scales, index_k, p.cutedsl_packed_pages)
         bind_score_operands(p)
+        require_kv_lengths_launch(p)
         # Build the replacement ownership snapshot before publishing bindings.
         # The retired state keeps its own snapshot until its queued work ends.
         staged.backing_tensors = _backing_tensors(
@@ -529,7 +536,7 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
                    cu_seqlens_q=None, cu_seqlens_k=None, request_lens=None,
                    index_page_indices=None, page_table=None, logical_k_tokens=None,
                    overlap_fixed_score=None, partial_dtype=None, out=None,
-                   check_device_inputs=True, fixed_stream=None, lean192="auto"):
+                   check_device_inputs=True, fixed_stream=None, lean192="auto", kv_lengths=None):
     validate_lean192(lean192)
     if lean192 == "on":
         from .index import lean192_compiler_supported
@@ -555,6 +562,15 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
     if not lens or any(not 0 < qn <= min(kn, 8192) or kn > 1048576 for qn, kn in lens):
         raise ValueError("each request requires 0 < Q <= 8192 and Q <= KV <= 1M")
     q_lens, kv_lens = tuple(qn for qn, _ in lens), tuple(kn for _, kn in lens)
+    if kv_lengths is not None:
+        # The step runs at KV lengths published after preparation: request_lens are its capacities.
+        if (unpacked or max(q_lens) != 1 or k.ndim != 4 or index_k.dtype == torch.uint8
+                or any(t.dtype != torch.bfloat16 for t in (q, k, v))):
+            raise ValueError("kv_lengths requires packed one-token requests (cu_seqlens and request_lens), "
+                             "paged BF16 Q/K/V and a BF16, FP16 or E4M3 Index")
+        if kv_lengths.device != q.device:
+            raise ValueError("kv_lengths must be on the Q device")
+        kv_lengths._bind(kv_lens)     # prepare_sm100 undoes a first binding if the preparation fails
     counts = tuple((kn + 127) // 128 for kn in kv_lens)
     pages_supplied = index_page_indices is not None
     if index_page_indices is None:
@@ -610,6 +626,11 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         q_offset_tokens=kv_lens[0]-q_lens[0] if len(lens)==1 else tuple(kn-qn for qn,kn in lens),
         policy=policy,
     )
+    # A decode-like step (one query token per request) runs query-outer: the Index stage, then one BSA
+    # pass over each token's prefix, local and routed blocks. Its Index and attention buffers are not sized
+    # by the KV blocks of the whole batch (the FP8 K/V page conversion above still is), and there is no
+    # separate Fixed pass to overlap.
+    query_outer = max(q_lens) == 1
     if overlap_fixed_score is None:
         overlap_fixed_score = len(lens)==1 or max(kv_lens)<=8192
     # One static persistent policy for all supported OG prefill requests.
@@ -625,15 +646,18 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
         compact_batch1_schedule=len(lens)==1 and max(kv_lens)>=32768,
         dynamic_route_fully_visible=fully_visible,
         dynamic_full_score_tiles=fully_visible,
-        cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k,
+        cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k, query_outer=query_outer,
+        kv_lengths=kv_lengths,
     )
+    if attention.query_outer:
+        overlap_fixed_score = False
     index = prepare_index(index_q, effective_index_k, index_q_scales=index_q_scales,
         index_page_indices=index_page_indices, candidate_storage=torch.empty((4,32,q.shape[0]), dtype=torch.float32, device=q.device),
         prefix_lens=offsets, attention=attention, q_lens=q_lens, kv_lens=kv_lens,
         index_pages_identity=not pages_supplied and len(lens)==1,
         check_device_inputs=check_device_inputs, original_q=q, original_k=k,
         original_v=v, contiguous_unpacked=unpacked and k.ndim==3, lean192=lean192,
-        overlap_fixed_score=bool(overlap_fixed_score) and not attention.fixed_only)
+        overlap_fixed_score=bool(overlap_fixed_score) and not attention.fixed_only, kv_lengths=kv_lengths)
     if not overlap_fixed_score or attention.fixed_only:
         fixed_stream = None
     elif fixed_stream is None:
@@ -645,7 +669,7 @@ def _prepare_state(index_q, index_k, q, k, v, *, index_q_scales=None,
                    request_lens=None if unpacked else lens, logical_k_tokens=logical_k_tokens,
                    overlap_fixed_score=overlap_fixed_score, partial_dtype=partial_dtype,
                    check_device_inputs=check_device_inputs, fixed_stream=fixed_stream,
-                   lean192=lean192)
+                   lean192=lean192, kv_lengths=kv_lengths)
     state = _State(attention, index, bindings, lens, rows, tuple(conversions), options,
                     fixed_stream, torch.cuda.Event() if fixed_stream else None,
                     torch.cuda.Event() if fixed_stream else None)
@@ -671,6 +695,13 @@ def prepare_sm100(*args, **kwargs):
         CutedslPipeline with retained bindings/workspaces and live O/LSE/routes.
     """
     from ...api import CutedslPipeline
-    state = _prepare_state(*args, **kwargs)
+    lengths = kwargs.get("kv_lengths")
+    first = lengths is not None and lengths.capacities is None
+    try:
+        state = _prepare_state(*args, **kwargs)
+    except BaseException:
+        if first:
+            lengths._unbind()     # a failed first preparation leaves the object as it was created
+        raise
     plan = Plan(state)
     return CutedslPipeline(plan, PreparedOwner(plan, state.lens))

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reuse optimized MBSA Index kernels with private preparation buffers."""
 from __future__ import annotations
+import dataclasses
 from dataclasses import dataclass, field
 import torch
 import cuda.bindings.driver as cuda
@@ -13,6 +14,7 @@ from .index_base import (IndexPipelineState, TWO_SM_ROUTER_OPTIONS, FP8_Q256_ROU
 from .src.sm100.router import (indexer_local_top16, indexer_packed_top16, _local_top16_arguments,
                                _packed_top16_arguments)
 from .kernels.plan import SPEC, PrefillPolicy
+from .kv_lengths import index_work_rows
 from .page_map import page_operand_view
 from .index_policy import (select_partition_blocks, lean192_index_eligible, two_sm_index_preferred,
                            packed_two_sm_index_preferred, skip_fixed_blocks_preferred, index_sm_count,
@@ -20,7 +22,9 @@ from .index_policy import (select_partition_blocks, lean192_index_eligible, two_
                            fp8_two_sm_index_preferred, resolve_index_dispatch, index_dispatch_request,
                            BASELINE_INDEX_DISPATCH, FINE_PARTITION_BLOCKS, FINE_PARTITION_MAX_PARTITIONS,
                            SKIP_FIXED_MAX_KV_TOKENS, FP8_TWO_SM_MIN_KV_TOKENS, FP8_TWO_SM_MIN_PARTITION_BLOCKS,
-                           SERIAL_MERGE_MAX_PARTITIONS)
+                           SERIAL_MERGE_MAX_PARTITIONS, EVEN_SPLIT_PARTITION_BLOCKS,
+                           heads_in_rows_work_rows, heads_in_rows_partition_counts, HEADS_IN_ROWS_REQUEST_ROWS)
+from .._binding import explicit_device
 from .._index_options import resolve_lean192, validate_lean192
 
 
@@ -41,6 +45,8 @@ class OptimizedIndexPlan(IndexPipelineState):
     # (policy inputs, choice) of the last binding: serving rebinds every layer of a step with the same
     # requests, so later layers reuse the dispatch choice instead of re-running the launch policies.
     _launch_choice: tuple | None = field(default=None, metadata=HOST_ONLY)
+    # Run-time KV lengths of a step prepared at a capacity (kv_lengths.KvLengths), shared by its plans.
+    kv_lengths: object | None = field(default=None, metadata=HOST_ONLY)
     # (index_dispatch_request(), IndexDispatch) of the last binding.
     _dispatch: tuple | None = field(default=None, metadata=HOST_ONLY)
     # (plan-owned router operands, their wrappers): serving rebinds every layer with the same output buffers
@@ -70,6 +76,12 @@ class OptimizedIndexPlan(IndexPipelineState):
         self._local_top16_compiled(*self._local_top16_args, stream)
 
 
+def _baseline_selection(dispatch):
+    """The baseline variant selection with `dispatch`'s launch forms (formats the variants are not measured for)."""
+    return dataclasses.replace(BASELINE_INDEX_DISPATCH, runtime_partitions=dispatch.runtime_partitions,
+                               heads_in_rows=dispatch.heads_in_rows)
+
+
 def lean192_compiler_supported():
     """Match the Indexer's actual compiler-target check during preparation."""
     return BaseDSL._get_dsl().get_arch_enum().is_family_of(Arch.sm_103f)
@@ -93,6 +105,17 @@ def _stage_packed_tile_metadata(device, requests, partition_blocks, query_tile):
         q_begin += q_len
         page_begin += kv_blocks
     return stage_int32(device, (metadata, (len(metadata) // 6, 6)))
+
+
+def require_kv_lengths_launch(plan):
+    """Reject a binding that does not read the plan's run-time KV lengths.
+
+    A plan prepared with kv_lengths reads them through the work rows of the heads-in-rows launch. Called
+    after bind_score_operands, at preparation and before a rebind is published.
+    """
+    if plan.kv_lengths is not None and not plan.heads_in_rows_bound:
+        raise ValueError("kv_lengths requires packed one-token requests with BF16, FP16 or E4M3 Index operands "
+                         "on a device whose Index dispatch binds heads in rows")
 
 
 def bind_score_operands(plan):
@@ -121,6 +144,9 @@ def bind_score_operands(plan):
     plan.queued_insert_bound = False
     plan.fp8_two_sm_bound = False
     plan.runtime_partitions_bound = False
+    plan.heads_in_rows_bound = False
+    plan.even_split_bound = False
+    plan.route_published = False
     if plan.attention.fixed_only or plan.mxfp6_router is not None:
         return
     # Every variant below is exact; the dispatch only selects which one is bound (index_policy):
@@ -144,8 +170,9 @@ def bind_score_operands(plan):
         plan._dispatch = (request, resolve_index_dispatch(plan.index_q.device, request))
     dispatch = plan._dispatch[1]
     if plan.index_q.dtype not in (torch.bfloat16, torch.float8_e4m3fn):
-        # The variants are measured, and compiled by serving warmup, for BF16 and E4M3 Index only.
-        dispatch = BASELINE_INDEX_DISPATCH
+        # The variants are measured for BF16 and E4M3 Index only: other formats bind the baseline selection,
+        # with the dispatch's launch forms (runtime partition counts, heads in rows).
+        dispatch = _baseline_selection(dispatch)
     skip_fixed_mode = dispatch.skip_fixed
     two_sm_mode = dispatch.two_sm
     partition_mode = dispatch.partitions
@@ -161,6 +188,49 @@ def bind_score_operands(plan):
         bf16 = plan.index_q.dtype == plan.cutedsl_index_k.dtype == torch.bfloat16
         fp8 = plan.index_q.dtype == plan.cutedsl_index_k.dtype == torch.float8_e4m3fn
         sm_count = lambda: index_sm_count(plan.index_q.device)   # noqa: E731 (device work only when needed)
+        heads = int(plan.index_q.shape[1])
+        rows = heads * int(plan.index_q.shape[0])
+        if (plan.attention.query_outer and dispatch.heads_in_rows and plan.index_q.is_contiguous()
+                and rows <= 65535):
+            # One-token requests (the query-outer attention pass reads the route): all heads of a token share
+            # a CTA, so each request's Index K is read once. The launch is memory-bound: Q128 rows, no
+            # fixed-block skip (it would save 16 block loads of a request and double the kernels to warm up),
+            # and an even split: a list of work rows, one CTA each, shared among the requests in proportion to
+            # their KV blocks, which keeps the SMs streaming whatever the KV lengths of the batch (one CTA per
+            # request would leave most SMs idle). The merge publishes the route itself.
+            row_groups = tuple(heads * q_len for q_len, _ in requests)
+            capacities = tuple(kv_len for _, kv_len in requests)
+            if plan.kv_lengths is not None:
+                # The lengths change from step to step: the launch keeps every row, and a request can take
+                # the rows the others leave, up to HEADS_IN_ROWS_REQUEST_ROWS.
+                grid_rows = heads_in_rows_work_rows(len(requests), sm_count=sm_count())
+                table = plan.kv_lengths._index_rows(row_groups, grid_rows)
+                partitions = min(grid_rows - len(requests) + 1, HEADS_IN_ROWS_REQUEST_ROWS,
+                                 max((kv_len + SPEC.block_size - 1) // SPEC.block_size for kv_len in capacities))
+            else:
+                key = (requests, "work_rows")
+                if plan._launch_choice is None or plan._launch_choice[0] != key:
+                    counts = heads_in_rows_partition_counts(
+                        capacities, heads_in_rows_work_rows(len(requests), sm_count=sm_count()))
+                    (table,) = stage_int32(plan.index_q.device, (
+                        index_work_rows(row_groups, capacities, capacities, counts, sum(counts)),
+                        (sum(counts), 7)))
+                    plan._launch_choice = (key, table, max(counts))
+                _, table, partitions = plan._launch_choice
+            shape = (1, partitions, rows, SPEC.dynamic_topk)
+            scores = plan.cutedsl_partition_scores
+            if not isinstance(scores, torch.Tensor) or tuple(scores.shape) != shape:
+                plan.cutedsl_partition_scores = torch.empty(shape, device=plan.index_q.device, dtype=torch.float32)
+                plan.cutedsl_partition_ids = torch.empty(shape, device=plan.index_q.device, dtype=torch.int32)
+            plan.cutedsl_packed_router_tile_metadata = table
+            plan.cutedsl_packed_router_partitions = partitions
+            plan.router_partition_blocks = EVEN_SPLIT_PARTITION_BLOCKS
+            plan.even_split_bound = True
+            plan.runtime_partitions_bound = True     # the buffers' partition extent follows the batch
+            plan.parallel_insert_bound = parallel_insert and fp8
+            plan.queued_insert_bound = queued_insert and fp8
+            plan.heads_in_rows_bound = plan.route_published = True
+            return
 
         def choose():
             partition_blocks = plan.candidate_partition_blocks
@@ -357,6 +427,26 @@ def _prepare_packed_launch(plan):
                      if plan.cutedsl_packed_router_tile_metadata is not None
                      else plan.cutedsl_packed_two_sm_tile_metadata if plan.two_sm_bound
                      else plan.cutedsl_packed_tile_metadata)
+    if plan.heads_in_rows_bound:
+        # Rows are (token, head) pairs of the [T*H,1,128] query view; the merge writes the route [H,T,16].
+        q_rows = plan.index_q.view(-1, 1, SPEC.head_dim)
+        route = plan.attention.tile_plan.dynamic_route
+        owned = (tile_metadata, scores, ids, route, plan.runtime_partitions_bound)
+        reuse = plan._output_arguments is not None and all(a is b for a, b in zip(plan._output_arguments[0], owned))
+        args = _packed_top16_arguments(q_rows, plan.cutedsl_index_k, plan.cutedsl_packed_pages, tile_metadata,
+                                       scores, ids, route, plan.runtime_partitions_bound,
+                                       outputs=plan._output_arguments[1] if reuse else None, route_token_mode=1)
+        plan._output_arguments = (owned, args[3:7])
+        compiled, _ = indexer_packed_top16(
+            q_rows, plan.cutedsl_index_k, partition_blocks=plan.router_partition_blocks,
+            page_indices=plan.cutedsl_packed_pages, tile_metadata=tile_metadata, partitions=partitions,
+            out_route=route, out_scores=scores, out_ids=ids, lean_pipeline=False,
+            **(dict(_parallel_insert=True) if plan.parallel_insert_bound else {}),
+            **(dict(_queued_insert=True) if plan.queued_insert_bound else {}),
+            _runtime_partitions=plan.runtime_partitions_bound, _row_heads=int(plan.index_q.shape[1]),
+            _even_split=plan.even_split_bound, _prepared_args=args, _prepare_only=True)
+        plan._packed_launch = (compiled, args)
+        return
     owned = (tile_metadata, scores, ids, plan.candidate_storage, plan.runtime_partitions_bound)
     reuse = plan._output_arguments is not None and all(a is b for a, b in zip(plan._output_arguments[0], owned))
     args = _packed_top16_arguments(plan.index_q, plan.cutedsl_index_k, plan.cutedsl_packed_pages, tile_metadata,
@@ -384,7 +474,8 @@ def _serving_router_variants(dispatch, fp8, max_kv_tokens):
 
     Yields (packed, partition_blocks, partitions, logical_k_tokens, options), one per compile key: query-tile
     variant, partition width, merge form (single-partition fused, serial or tree) and fixed-block skip, pruned
-    with the policy's KV and width thresholds. With static partition counts every count is its own kernel.
+    with the policy's KV and width thresholds, then the heads-in-rows kernels of one-token requests (options
+    with _row_heads). With static partition counts every count is its own kernel.
     """
     block = SPEC.block_size
     max_blocks = (max_kv_tokens + block - 1) // block
@@ -440,6 +531,15 @@ def _serving_router_variants(dispatch, fp8, max_kv_tokens):
                             partitions = (kv + block * width - 1) // (block * width)
                             yield (packed, width, partitions, kv,
                                    dict(options, **(dict(_skip_fixed_blocks=True) if skip else {})))
+    if dispatch.heads_in_rows:
+        # Packed steps of one-token requests: the even-split launch, with the serial and with the tree merge
+        # (its partition count is a run-time extent, and its partition width a run-time value).
+        inserts = dict(_row_heads=SPEC.kv_heads, _even_split=True,
+                       **(dict(_parallel_insert=True) if fp8 and dispatch.parallel_insert else {}))
+        if fp8 and dispatch.queued_insert:
+            inserts["_queued_insert"] = True
+        for partitions in (1, SERIAL_MERGE_MAX_PARTITIONS + 1):
+            yield True, EVEN_SPLIT_PARTITION_BLOCKS, partitions, 2 * block, inserts
 
 
 _COMPILED_SERVING_VARIANTS = set()
@@ -450,27 +550,32 @@ def compile_serving_index_variants(device, index_dtype, *, max_kv_tokens):
 
     Args:
         device: CUDA device of the serving runner.
-        index_dtype: Index Q/K dtype; only BF16 and E4M3 Index use the dispatch variants.
+        index_dtype: Index Q/K dtype: BF16 or E4M3 (the dispatch variants), or FP16 (always the baseline
+            selection). MX Index formats use their own scorer.
         max_kv_tokens: Largest per-request KV extent of the steps.
 
     Returns:
-        Number of router variants prepared (compiled unless already cached); 0 for the baseline selection,
-        other Index dtypes, a dispatch with static partition counts (one kernel per count, not enumerated)
-        or a repeated call. Allocates temporary dummy operands and compiles without launching.
+        Number of router variants prepared (compiled unless already cached); 0 for other Index dtypes, a
+        dispatch with static partition counts (one kernel per count, not enumerated) or a repeated call
+        for the same GPU. Allocates temporary dummy operands and compiles without launching.
     """
-    device = torch.device(device)
+    device = explicit_device(device)
     dispatch = resolve_index_dispatch(device)
+    if index_dtype == torch.float16:
+        dispatch = _baseline_selection(dispatch)   # as bind_score_operands binds FP16 Index
     fp8 = index_dtype == torch.float8_e4m3fn
     done = (device.index, index_dtype, dispatch, max_kv_tokens)
-    if (dispatch == BASELINE_INDEX_DISPATCH or not dispatch.runtime_partitions
-            or index_dtype not in (torch.bfloat16, torch.float8_e4m3fn) or done in _COMPILED_SERVING_VARIANTS):
+    if (not dispatch.runtime_partitions or done in _COMPILED_SERVING_VARIANTS
+            or index_dtype not in (torch.bfloat16, torch.float16, torch.float8_e4m3fn)):
         return 0
     prepared = 0
     heads, dim, block, rows = SPEC.kv_heads, 128, SPEC.block_size, 256
     variants = list(_serving_router_variants(dispatch, fp8, max_kv_tokens))
+    if not variants:
+        _COMPILED_SERVING_VARIANTS.add(done)
+        return 0
     # Compilation reads only shapes: one uninitialized K buffer (the largest variant's) serves every variant.
-    k_pages = max(((kv + block - 1) // block * (2 if packed else 1) + 1 for packed, _, _, kv, _ in variants),
-                  default=1)
+    k_pages = max((kv + block - 1) // block * (2 if packed else 1) + 1 for packed, _, _, kv, _ in variants)
     k_all = torch.empty((k_pages * block, 1, dim), device=device, dtype=index_dtype)
     q = torch.empty((rows, heads, dim), device=device, dtype=index_dtype)
     for packed, width, partitions, kv, options in variants:
@@ -478,13 +583,25 @@ def compile_serving_index_variants(device, index_dtype, *, max_kv_tokens):
         requests = ((rows // 2, kv), (rows // 2, kv)) if packed else ((rows, kv),)
         pages = torch.arange(blocks * len(requests), dtype=torch.int32, device=device)
         k = k_all[:(pages.numel() + 1) * block]
-        shape = (heads, partitions, rows, SPEC.dynamic_topk)
-        scores = torch.empty(shape, device=device, dtype=torch.float32)
-        ids = torch.empty(shape, device=device, dtype=torch.int32)
-        compact = torch.empty((heads, 2 * SPEC.dynamic_topk, rows), device=device, dtype=torch.int32)
-        common = dict(partition_blocks=width, page_indices=pages, out_scores=scores, out_ids=ids,
-                      out_compact_ids=compact, _runtime_partitions=dispatch.runtime_partitions, _prepare_only=True)
-        if packed:
+        topk = SPEC.dynamic_topk
+        if "_row_heads" in options:
+            # Two one-token requests; rows are (token, head) pairs and the merge writes the route.
+            shape = (1, partitions, 2 * heads, topk)
+            outputs = dict(out_compact_ids=None,
+                           out_route=torch.empty((heads, 2, topk), device=device, dtype=torch.int32))
+        else:
+            shape = (heads, partitions, rows, topk)
+            outputs = dict(out_compact_ids=torch.empty((heads, 2 * topk, rows), device=device, dtype=torch.int32))
+        common = dict(partition_blocks=width, page_indices=pages,
+                      out_scores=torch.empty(shape, device=device, dtype=torch.float32),
+                      out_ids=torch.empty(shape, device=device, dtype=torch.int32), **outputs,
+                      _runtime_partitions=dispatch.runtime_partitions, _prepare_only=True)
+        if "_row_heads" in options:
+            (metadata,) = stage_int32(device, (index_work_rows((heads, heads), (kv, kv), (kv, kv), (1, 1), 2),
+                                               (2, 7)))
+            indexer_packed_top16(q[:2].view(-1, 1, dim), k, tile_metadata=metadata, partitions=partitions,
+                                 **common, **options)
+        elif packed:
             tile = options.get("_query_tile", 128)
             (metadata,) = _stage_packed_tile_metadata(device, requests, width, tile)
             indexer_packed_top16(q, k, tile_metadata=metadata, partitions=partitions, **common, **options)
@@ -499,7 +616,8 @@ def compile_serving_index_variants(device, index_dtype, *, max_kv_tokens):
 def prepare_index(index_q, index_k, *, index_q_scales, index_page_indices,
                   candidate_storage, prefix_lens, attention, q_lens, kv_lens,
                   index_pages_identity, check_device_inputs, original_q,
-                  original_k, original_v, contiguous_unpacked, lean192="auto", overlap_fixed_score=False):
+                  original_k, original_v, contiguous_unpacked, lean192="auto", overlap_fixed_score=False,
+                  kv_lengths=None):
     """Allocate selection workspaces and bind the Index stage for a prepared attention plan.
 
     Args:
@@ -652,8 +770,11 @@ def prepare_index(index_q, index_k, *, index_q_scales, index_page_indices,
         ):
             raise ValueError("index_page_indices references Index K out of range")
 
-        page_operand = page_operand_view(request_pages, 16 if batch == 1 or is_mx else 4)
-        if batch == 1 and not is_mx:
+        # A decode-like single request (the query-outer pass) takes the packed launch: with heads in rows its
+        # Index K is read once, by as many CTAs as a batch gets.
+        single_decode = batch == 1 and attention.query_outer and not is_mx
+        page_operand = page_operand_view(request_pages, 16 if (batch == 1 and not single_decode) or is_mx else 4)
+        if batch == 1 and not is_mx and not single_decode:
             cutedsl_index_pages = page_operand
             cutedsl_logical_k_tokens = kv_lens[0]
             if index_pages_identity is None and check_device_inputs:
@@ -761,7 +882,8 @@ def prepare_index(index_q, index_k, *, index_q_scales, index_page_indices,
         cutedsl_packed_tile_metadata=cutedsl_packed_tile_metadata,
         cutedsl_packed_requests=cutedsl_packed_requests,
         _lean192_early_router=resolve_lean192(lean192, lean192_early_router),
-        lean192_mode=lean192, overlap_fixed_score=overlap_fixed_score,
+        lean192_mode=lean192, overlap_fixed_score=overlap_fixed_score, kv_lengths=kv_lengths,
     )
     bind_score_operands(plan)
+    require_kv_lengths_launch(plan)
     return plan

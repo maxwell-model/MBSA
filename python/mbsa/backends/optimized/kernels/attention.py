@@ -20,12 +20,14 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+import cuda.bindings.driver as cuda
 import torch
 
 from .route_padding import canonicalize_dynamic_top16_padding
 
 from .merge import (
     _merge_two_attention_states_cutedsl,
+    prepare_split_combine,
 )
 from .msa_sparse_attn_prefill import (
     allocate_csr_scratch,
@@ -33,6 +35,7 @@ from .msa_sparse_attn_prefill import (
     sparse_gqa_stage2_attn_fwd_msa_prefill,
 )
 from .plan import FwdTilePlan, PrefillPolicy, SPEC, dynamic_partial_capacity
+from ..index_policy import index_sm_count
 from ..bsa.cute_dsl.sparse.bsa_attn_sm100_blk128 import (
     BsaOutputLayout,
     bsa_attn_sm100_blk128_fwd,
@@ -114,6 +117,19 @@ class UnifiedAlignedPrefillPlan:
     # Benchmark-only override. Production leaves this unset and uses the MSA
     # selector so dispatch policy stays separate from kernel mechanics.
     dynamic_kernel_cfg: Any = None
+    # Every request has one query token (a decode-like step): Fixed and the routed Dynamic blocks run in one
+    # query-outer BSA pass that writes out / out_lse. No CSR, schedule, Dynamic partials or state merge exist.
+    query_outer: bool = False
+    # Splits of every (token, KV head) tile of the query-outer pass. A small batch leaves most SMs without a
+    # tile; with splits > 1 a tile's blocks go to that many CTAs, which write their states to split_out /
+    # split_lse ([T * splits, 32, 128] / [T * splits, 32]), and a combine kernel writes out / out_lse.
+    query_outer_splits: int = 1
+    split_out: torch.Tensor | None = None
+    split_lse: torch.Tensor | None = None
+    # (operand tensors, compiled pass, its arguments[, compiled combine, its arguments]) of the last
+    # query-outer run: the launch is prepared once per binding and then called directly. Host-only, like
+    # _merge_inputs.
+    _query_outer_launch: tuple | None = field(default=None, repr=False, metadata={"ownership": False})
     # (merge input tensors, their wrappers): rebinding a serving layer keeps these plan-owned tensors. Host-only:
     # the ownership walk skips it, as the tensors are also held by the fields above.
     _merge_inputs: tuple | None = field(default=None, repr=False, metadata={"ownership": False})
@@ -158,6 +174,11 @@ class UnifiedAlignedPrefillPlan:
             qhead_per_kv=SPEC.group_size,
         )
 
+    def _require_stages(self) -> None:
+        if self.query_outer:
+            raise RuntimeError("a query-outer plan (one query token per request) has no Fixed, Dynamic or merge "
+                               "stage: use run()")
+
     def build_dynamic_from_candidates(
         self,
         candidate_storage: torch.Tensor | None,
@@ -182,6 +203,7 @@ class UnifiedAlignedPrefillPlan:
             None; overwrites Dynamic route/CSR/schedule storage and optional output tile maps on
             the current stream. Retain storage and order reuse through completion.
         """
+        self._require_stages()
         schedule = self.dynamic_state[2]
         if self.native_scheduler_metadata is not None:
             schedule.scheduler_metadata = self.native_scheduler_metadata
@@ -236,6 +258,7 @@ class UnifiedAlignedPrefillPlan:
         Returns:
             None; modifies the stage's retained output/workspace buffers.
         """
+        self._require_stages()
         paged = self.tile_plan.policy == PrefillPolicy.ALIGNED_PAGED
         bsa_attn_sm100_blk128_fwd(
             self.q,
@@ -260,7 +283,59 @@ class UnifiedAlignedPrefillPlan:
             implicit_fixed_load_reduce=self.fixed_tmem_load_reduce,
         )
 
+    def run_query_outer(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Enqueue the query-outer pass of a one-token-per-request step: each token's prefix, local and
+        routed Dynamic blocks (tile_plan.dynamic_route, published by the Index stage) under one softmax.
+
+        Uses bound inputs on the current CUDA stream; keep buffers valid until completion.
+
+        Returns:
+            Live (BF16 out [T,32,128], FP32 natural-log out_lse [T,32]), overwritten by subsequent runs.
+        """
+        if not self.query_outer:
+            raise RuntimeError("run_query_outer() requires a plan prepared with query_outer=True")
+        paged = self.tile_plan.policy == PrefillPolicy.ALIGNED_PAGED
+        operands = (self.q, self.k, self.v, self.out, self.tile_plan.page_table, self.tile_plan.dynamic_route)
+        splits = self.query_outer_splits
+        launch = self._query_outer_launch
+        if launch is None or any(a is not b for a, b in zip(launch[0], operands)):
+            # Serving rebinds every layer: validate and wrap the operands once per binding, not once per run.
+            launch = (operands, *bsa_attn_sm100_blk128_fwd(
+                self.q,
+                self.k,
+                self.v,
+                q2k_block_index=self.tile_plan.dynamic_route,
+                block_sparse_num=16,
+                block_sizes=None,
+                softmax_scale=SPEC.head_dim**-0.5,
+                out=self.split_out if splits > 1 else self.out,
+                lse=(self.split_lse if splits > 1 else self.out_lse).t(),
+                return_lse=True,
+                causal=True,
+                implicit_fixed_support=True,
+                implicit_fixed_route_blocks=SPEC.dynamic_topk,
+                num_splits=splits,
+                logical_seqlen_k=self.max_seqlen_k if paged else self.total_k,
+                page_table=self.tile_plan.page_table if paged else None,
+                packed_tiles=self.fixed_packed_tiles,
+                use_clc_scheduler=self.fixed_use_clc_scheduler,
+                output_layout=BsaOutputLayout.SCATTERED,
+                split_p_arrive=self.fixed_split_p_arrive,
+                sync_first_p_release=self.fixed_sync_first_p_release,
+                _prepare_only=True,
+            ))
+            if splits > 1:
+                launch += prepare_split_combine(self.split_out, self.split_lse, self.tile_plan.dynamic_route,
+                                                self.fixed_packed_tiles, self.out, self.out_lse, splits)
+            self._query_outer_launch = launch
+        stream = cuda.CUstream(torch.cuda.current_stream(self.q.device).cuda_stream)
+        launch[1](*launch[2], stream)
+        if splits > 1:
+            launch[3](*launch[4], stream)
+        return self.out, self.out_lse
+
     def _run_dynamic(self, phase: str | None = None) -> None:
+        self._require_stages()
         if self.fixed_only:
             return
         row_ptr, q_indices, schedule = self.dynamic_state
@@ -340,6 +415,7 @@ class UnifiedAlignedPrefillPlan:
             Live (BF16 out [T,32,128], FP32 natural-log out_lse [T,32]), overwritten by subsequent
             runs.
         """
+        self._require_stages()
         if self.fixed_only:
             if self.fixed_output_layout is BsaOutputLayout.NON_SCATTERED:
                 self.out.view(-1, SPEC.kv_heads, SPEC.group_size, SPEC.head_dim).copy_(
@@ -375,6 +451,8 @@ class UnifiedAlignedPrefillPlan:
             Live (BF16 out [T,32,128], FP32 natural-log out_lse [T,32]), overwritten by subsequent
             runs.
         """
+        if self.query_outer:
+            return self.run_query_outer()
         self.run_fixed()
         self.run_dynamic()
         return self.run_merge()
@@ -382,6 +460,23 @@ class UnifiedAlignedPrefillPlan:
 
 
 
+
+
+# 32 splits (one block each, a pair with its padding) measured 6 us slower than 16 for one request on B300.
+QUERY_OUTER_MAX_SPLITS = 16
+
+
+def query_outer_splits(tokens, sm_count):
+    """Splits of every (token, KV head) tile of a query-outer pass over `tokens` one-token requests.
+
+    A tile runs its up to 32 blocks in series, in pairs; the pass has tokens * 4 tiles. The largest power of
+    two that still gives every split its own SM, at most QUERY_OUTER_MAX_SPLITS (a pair of blocks per split).
+    Pure host arithmetic.
+    """
+    splits = 1
+    while splits < QUERY_OUTER_MAX_SPLITS and tokens * SPEC.kv_heads * splits * 2 <= sm_count:
+        splits *= 2
+    return splits
 
 
 def prepare_unified_aligned_prefill(
@@ -404,6 +499,8 @@ def prepare_unified_aligned_prefill(
     cu_seqlens_q: torch.Tensor | None = None,
     cu_seqlens_k: torch.Tensor | None = None,
     dynamic_kernel_cfg: Any = None,
+    query_outer: bool = False,
+    kv_lengths: Any = None,
 ) -> UnifiedAlignedPrefillPlan:
     """Allocate and prepare private Fixed/Dynamic attention stages outside capture.
 
@@ -441,6 +538,8 @@ def prepare_unified_aligned_prefill(
             allowed.
         dynamic_kernel_cfg: Optional explicit MSA Cfg override; None preserves the selected MSA
             heuristic.
+        query_outer: Prepare the query-outer pass instead of the Fixed, Dynamic and merge stages
+            (default False). Requires one query token per request; ignored for fixed-only plans.
 
     Returns:
         UnifiedAlignedPrefillPlan owning stage outputs, scratch and schedule resources while
@@ -546,6 +645,51 @@ def prepare_unified_aligned_prefill(
     valid_kv_tokens = tuple(int(x) for x in tile_plan.valid_kv_tokens.cpu().tolist())
     if valid_kv_tokens != kv_lens:
         raise ValueError("valid_kv_tokens does not match per-request KV lengths")
+
+    fixed_request_ranges = tuple(
+        (q_prefix[i], q_prefix[i + 1], k_prefix[i], k_prefix[i + 1])
+        for i in range(batch)
+    )
+    # One descriptor per 128 packed GQA rows; the scheduler never creates a
+    # tile spanning two requests, including partial final Q tiles.
+    fixed_packed_tiles = torch.tensor(
+        [(i, tile, qb, qe, kb, ke)
+         for i, (qb, qe, kb, ke) in enumerate(fixed_request_ranges)
+         for tile in range(((qe - qb) * SPEC.group_size + 127) // 128)],
+        dtype=torch.int32, device=q.device,
+    )
+    if kv_lengths is not None and not (
+            query_outer and skv > (SPEC.prefix_blocks + SPEC.local_swa_blocks) * SPEC.block_size):
+        raise ValueError("kv_lengths requires one query token per request and a KV capacity above 2048 tokens")
+    if query_outer and skv > (SPEC.prefix_blocks + SPEC.local_swa_blocks) * SPEC.block_size:
+        if max_seqlen_q != 1:
+            raise ValueError("the query-outer pass requires one query token per request")
+        if kv_lengths is not None:
+            # The tiles hold the requests' current KV bounds: every plan of the step reads this one table.
+            fixed_packed_tiles = kv_lengths._attention_tiles()
+        # The pass reads the Dynamic route the Index stage publishes and writes the final state: no CSR
+        # (whose histogram is sized by the KV blocks of the whole batch), schedule, partials or merge.
+        splits = query_outer_splits(total_q, index_sm_count(q.device))
+        if not out.is_contiguous():
+            splits = 1     # the combine writes whole rows of a contiguous output
+        return UnifiedAlignedPrefillPlan(
+            q=q, k=k, v=v, tile_plan=tile_plan,
+            route_sentinel=torch.zeros((1,), dtype=torch.int32, device=q.device),
+            dynamic_state=None, dynamic_csr_scratch=None, fixed_out=None, fixed_lse=None,
+            dynamic_out=None, dynamic_workspace=None, cu_q=cu_q, cu_k=cu_k,
+            fixed_request_ranges=fixed_request_ranges, fixed_packed_tiles=fixed_packed_tiles,
+            out=out,
+            out_lse=torch.empty((total_q, SPEC.q_heads), dtype=torch.float32, device=q.device),
+            partial_dtype=partial_dtype, max_seqlen_k=skv, total_k=total_k, total_rows=total_rows,
+            max_seqlen_q=max_seqlen_q, batch=batch, fixed_use_clc_scheduler=fixed_use_clc_scheduler,
+            fixed_split_p_arrive=fixed_split_p_arrive,
+            fixed_sync_first_p_release=fixed_sync_first_p_release, query_outer=True,
+            query_outer_splits=splits,
+            split_out=(torch.zeros((total_q * splits, SPEC.q_heads, SPEC.head_dim), dtype=q.dtype, device=q.device)
+                       if splits > 1 else None),
+            split_lse=(torch.zeros((total_q * splits, SPEC.q_heads), dtype=torch.float32, device=q.device)
+                       if splits > 1 else None),
+        )
 
     if dynamic_kernel_cfg is None:
         from ..msa.cute.src.sm100.fwd.config import select_msa_cfg  # noqa: PLC0415
@@ -718,18 +862,6 @@ def prepare_unified_aligned_prefill(
     # a one-element device sentinel satisfies the compiled call ABI without
     # publishing prefix/SWA route records.
     route_sentinel = torch.zeros((1,), dtype=torch.int32, device=q.device)
-    fixed_request_ranges = tuple(
-        (q_prefix[i], q_prefix[i + 1], k_prefix[i], k_prefix[i + 1])
-        for i in range(batch)
-    )
-    # One descriptor per 128 packed GQA rows; the scheduler never creates a
-    # tile spanning two requests, including partial final Q tiles.
-    fixed_packed_tiles = torch.tensor(
-        [(i, tile, qb, qe, kb, ke)
-         for i, (qb, qe, kb, ke) in enumerate(fixed_request_ranges)
-         for tile in range(((qe - qb) * SPEC.group_size + 127) // 128)],
-        dtype=torch.int32, device=q.device,
-    )
     return UnifiedAlignedPrefillPlan(
         q=q,
         k=k,

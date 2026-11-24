@@ -108,6 +108,9 @@ def bsa_attn_sm100_blk128_fwd(
     output_layout: BsaOutputLayout = BsaOutputLayout.SCATTERED,
     logical_seqlen_k: Optional[int] = None,
     packed_tiles: Optional[torch.Tensor] = None,
+    implicit_fixed_route_blocks: int = 0,
+    num_splits: int = 1,
+    _prepare_only: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Forward pass for BSA block-sparse attention using the blk128 CuTe-DSL kernel.
 
@@ -161,6 +164,19 @@ def bsa_attn_sm100_blk128_fwd(
             attention. Each row is [request, local_m_tile, q_begin, q_end,
             k_begin, k_end]; tile width is 128 packed GQA rows. Build once
             during plan preparation; all requests execute in one kernel.
+        implicit_fixed_route_blocks: 0 (default), or the number of routed blocks per query token that
+            follow the implicit fixed blocks in the same pass. q2k_block_index is then the contiguous
+            int32 route [Hkv,T,implicit_fixed_route_blocks]: each token's block IDs outside its fixed
+            set, valid IDs first and negative padding after them. Requires implicit_fixed_support and
+            packed tiles of one query token each (q_end = q_begin + 1), whose route row is q_begin.
+        num_splits: 1 (default), or with implicit_fixed_route_blocks the number of splits of every tile:
+            split s runs blocks s, s + num_splits, ... of the tile's block list and writes its own state.
+            out is then [T * num_splits, H, D] and lse [H, T * num_splits], token t's split s in row
+            t * num_splits + s; a split past the list holds an arbitrary state. The caller combines the
+            first min(num_splits, blocks of the list) states of each (token, head).
+        _prepare_only: Compile without launching and return (compiled, arguments): the caller launches
+            with compiled(*arguments, stream) on each run, skipping this wrapper's per-call validation.
+            The arguments alias the operands given here.
 
     Returns:
         (out,lse). out is supplied or allocated FP16/BF16 storage matching Q dtype and selected
@@ -191,6 +207,13 @@ def bsa_attn_sm100_blk128_fwd(
                 or packed_tiles.shape[0] == 0 or packed_tiles.dtype != torch.int32
                 or packed_tiles.device != q.device or not packed_tiles.is_contiguous()):
             raise ValueError("packed_tiles must be contiguous [tiles,6] int32 on the Q device")
+    if implicit_fixed_route_blocks:
+        if not (is_varlen and implicit_fixed_support) or implicit_fixed_load_reduce:
+            raise ValueError("routed blocks require packed tiles with implicit fixed support and the "
+                             "general load path")
+        if packed_tiles.shape[0] != seqlen_q:
+            # A tile of several tokens would read its first token's route for every row.
+            raise ValueError("routed blocks require one packed tile per query token")
     is_paged_kv = page_table is not None
     if is_paged_kv:
         page_table = maybe_contiguous(page_table)
@@ -244,7 +267,12 @@ def bsa_attn_sm100_blk128_fwd(
             raise ValueError(
                 "implicit fixed support requires causal=True and no block counts"
             )
-        if q2k_block_index.numel() != 1:
+        if implicit_fixed_route_blocks:
+            if (tuple(q2k_block_index.shape) != (num_head_kv, seqlen_q, implicit_fixed_route_blocks)
+                    or not q2k_block_index.is_contiguous() or q2k_block_index.device != q.device):
+                raise ValueError("the route must be contiguous int32 [Hkv,T,implicit_fixed_route_blocks] "
+                                 "on the Q device")
+        elif q2k_block_index.numel() != 1:
             raise ValueError("implicit fixed support expects one int32 route sentinel")
         block_sparse_num = 16
     has_block_sizes = block_sizes is not None
@@ -273,8 +301,15 @@ def bsa_attn_sm100_blk128_fwd(
         pack_gqa = False
     if grouped_output and not pack_gqa:
         raise ValueError("non-scattered output requires packed GQA tiles")
+    if implicit_fixed_route_blocks and not pack_gqa:
+        # The route is per KV head: only packed GQA tiles are scheduled by KV head.
+        raise ValueError("routed blocks require packed GQA tiles")
 
-    lse_shape = (num_head, seqlen_q) if is_varlen else (batch_size, num_head, seqlen_q)
+    num_splits = int(num_splits)
+    if num_splits < 1 or (num_splits > 1 and (not implicit_fixed_route_blocks or grouped_output)):
+        raise ValueError("num_splits requires routed blocks (implicit_fixed_route_blocks) and the scattered "
+                         "[T,H,D] output layout")
+    lse_shape = (num_head, seqlen_q * num_splits) if is_varlen else (batch_size, num_head, seqlen_q)
     requires_grad = q.requires_grad or k.requires_grad or v.requires_grad
 
     output_shape = (
@@ -283,6 +318,10 @@ def bsa_attn_sm100_blk128_fwd(
     )
     if is_varlen:
         output_shape = output_shape[1:]
+    if num_splits > 1:
+        output_shape = (seqlen_q * num_splits, *output_shape[1:])
+        if lse is None or tuple(lse.shape) != lse_shape:
+            raise ValueError(f"split tiles write their LSE: lse must have shape {lse_shape}")
     if out is None:
         out = torch.empty(output_shape, dtype=q.dtype, device=q.device)
     if tuple(out.shape) != output_shape or out.dtype != q.dtype or out.device != q.device:
@@ -339,13 +378,18 @@ def bsa_attn_sm100_blk128_fwd(
         implicit_fixed_load_reduce,
         output_layout,
         is_varlen,
+        implicit_fixed_route_blocks,
+        num_splits,
+        num_head_kv if num_splits > 1 else None,     # the split kernel decodes (split, head) with this count
     )
 
     if compile_key not in _sm100_blk128_compile_cache:
         q_tensor, k_tensor, v_tensor, o_tensor = [
             to_cute_tensor(t) for t in (q, k, v, out)
         ]
-        lse_tensor = to_cute_tensor(lse, assumed_align=4) if lse is not None else None
+        # The routed pass writes the caller's token-major LSE through a transposed [Hq,T] view.
+        lse_tensor = (to_cute_tensor(lse, assumed_align=4, fully_dynamic=bool(implicit_fixed_route_blocks))
+                      if lse is not None else None)
         block_index_tensor = to_cute_tensor(q2k_block_index)
         block_sizes_tensor = to_cute_tensor(block_sizes) if has_block_sizes else None
         block_nums_tensor = (
@@ -383,6 +427,9 @@ def bsa_attn_sm100_blk128_fwd(
             implicit_fixed_load_reduce=implicit_fixed_load_reduce,
             grouped_output=grouped_output,
             is_varlen=is_varlen,
+            implicit_fixed_route_blocks=implicit_fixed_route_blocks,
+            num_splits=num_splits,
+            split_heads=num_head_kv if num_splits > 1 else 0,
         )
 
         _sm100_blk128_compile_cache[compile_key] = cute.compile(
@@ -404,24 +451,26 @@ def bsa_attn_sm100_blk128_fwd(
             options="--enable-tvm-ffi",
         )
 
+    arguments = (
+        q.detach(),
+        k.detach(),
+        v.detach(),
+        out.detach(),
+        lse,
+        softmax_scale,
+        q2k_block_index.detach(),
+        block_sizes.detach() if has_block_sizes else None,
+        block_sparse_num,
+        q2k_block_nums.detach() if has_variable_block_nums else None,
+        page_table.detach() if is_paged_kv else None,
+        seqlen_k,
+        packed_tiles,
+    )
+    if _prepare_only:
+        return _sm100_blk128_compile_cache[compile_key], arguments
     if not is_fake_mode():
         with torch.cuda.nvtx.range("bsa_attn_sm100_blk128_fwd_kernel"):
-            _sm100_blk128_compile_cache[compile_key](
-                q.detach(),
-                k.detach(),
-                v.detach(),
-                out.detach(),
-                lse,
-                softmax_scale,
-                q2k_block_index.detach(),
-                block_sizes.detach() if has_block_sizes else None,
-                block_sparse_num,
-                q2k_block_nums.detach() if has_variable_block_nums else None,
-                page_table.detach() if is_paged_kv else None,
-                seqlen_k,
-                packed_tiles,
-                current_stream,
-            )
+            _sm100_blk128_compile_cache[compile_key](*arguments, current_stream)
 
     return out, lse
 

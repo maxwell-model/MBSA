@@ -5,6 +5,7 @@ import bisect
 import contextlib
 import contextvars
 import dataclasses
+from fractions import Fraction
 import functools
 import os
 
@@ -28,7 +29,12 @@ class IndexDispatch:
         queued_insert: Queued Top-16 insertion on E4M3 routers.
         fp8_two_sm: E4M3 256-row tiles with the queued insertion as 2-SM CTA pairs: "0" or "auto".
         runtime_partitions: Compile the router with the KV partition count as a runtime extent, so the
-            kernel depends on the partition width and merge form, not the count (fewer kernels to warm up).
+            kernel depends on the partition width and merge form, not the count: serving warmup can then
+            compile every kernel of the dispatch. False (one kernel per count) is for comparisons only.
+        heads_in_rows: Packed steps of one-token requests (decode-like) score all Index heads of a token in
+            one CTA, so a request's Index K is read once instead of once per head; the launch is a list of
+            work rows shared among the requests (heads_in_rows_partition_counts), whatever `partitions`
+            says. False (one CTA per head) is for comparisons only.
     """
 
     two_sm: str = "auto"
@@ -39,6 +45,7 @@ class IndexDispatch:
     queued_insert: bool = True
     fp8_two_sm: str = "auto"
     runtime_partitions: bool = True
+    heads_in_rows: bool = True
 
     def __post_init__(self):
         for name, allowed in (("two_sm", ("0", "1", "auto")), ("skip_fixed", ("0", "1", "auto")),
@@ -46,17 +53,17 @@ class IndexDispatch:
                               ("fp8_two_sm", ("0", "auto"))):
             if getattr(self, name) not in allowed:
                 raise ValueError(f"IndexDispatch.{name} must be one of {allowed}")
-        for name in ("parallel_insert", "queued_insert", "runtime_partitions"):
+        for name in ("parallel_insert", "queued_insert", "runtime_partitions", "heads_in_rows"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"IndexDispatch.{name} must be a bool")
 
 
 # B300 (SM103) default: each variant inside its measured faster domain (see the policies below).
 AUTO_INDEX_DISPATCH = IndexDispatch()
-# Baseline selection: Q128 with the qualified dense E4M3 Q256 rules, Lean192, PB1024 / PB2048.
+# Baseline selection: Q128 with the qualified dense E4M3 Q256 rules, Lean192, PB1024 / PB2048. Like the default
+# it takes the partition count at run time: SM100 and MBSA_INDEX_DISPATCH=baseline serve from warmed-up kernels too.
 BASELINE_INDEX_DISPATCH = IndexDispatch(two_sm="0", skip_fixed="0", partitions="0", fp8_q256="0",
-                                        parallel_insert=False, queued_insert=False, fp8_two_sm="0",
-                                        runtime_partitions=False)
+                                        parallel_insert=False, queued_insert=False, fp8_two_sm="0")
 # Per thread / task: an override in one serving thread never reaches plans bound by another.
 _dispatch_override = contextvars.ContextVar("mbsa_index_dispatch_override", default=None)
 
@@ -127,8 +134,8 @@ def _validate_index_token_extent(logical_k_tokens, partition_blocks):
         fit in signed 32-bit arithmetic. Tensor allocation and compilation may
         impose smaller practical limits.
     """
-    if partition_blocks not in (64, 128, 256, 512, 1024, 2048, 4096, 8192):
-        raise ValueError("partition_blocks must be 64, 128, 256, 512, 1024, 2048, 4096, or 8192")
+    if partition_blocks not in (16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192):
+        raise ValueError("partition_blocks must be 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, or 8192")
     limit = (1 << 31) - 128 * partition_blocks
     if not 0 < logical_k_tokens <= limit:
         raise ValueError(
@@ -380,6 +387,106 @@ FINE_PARTITION_MAX_PARTITIONS = 32
 FINE_PARTITION_MAX_EMPTY_SHARE = 0.5
 # Merges of up to SERIAL_MERGE_MAX_PARTITIONS partitions walk them serially; more take the tree merge.
 SERIAL_MERGE_MAX_PARTITIONS = 16
+# Heads-in-rows launches (IndexDispatch.heads_in_rows) are a list of work rows, one CTA each: a row is one
+# partition of one request, and the router divides the request's own KV blocks equally among its partitions at
+# run time (IndexerLocalTop16Sm100.even_split). Their time is the Index K read, not the UMMA: this many CTAs
+# per SM already read K at the device's memory bandwidth, and heads_in_rows_work_rows sizes the launch by it.
+# B300 (148 SMs), 32 requests: 128 CTAs do; 64 CTAs read 256K tokens per request 1.4x slower; 256 or 512 are
+# no faster and only lengthen the merge. The rows a request gets follow the KV lengths of the step, not
+# the lengths the launch was prepared for, so one captured launch serves every length up to its capacity.
+HEADS_IN_ROWS_CTAS_PER_SM = 0.85
+# The compiled partition width is unused by an even split; one value keeps one kernel.
+EVEN_SPLIT_PARTITION_BLOCKS = 16
+# A small batch leaves a request more rows than it has use for: every partition of a row is one more list
+# for the merge to fold (0.43 us each on B300), and a CTA scans a block in 0.36 us after 3 us of start-up. One
+# request, B300: 8K KV tokens in 64 partitions 10.1 us (router 3.6 + merge 6.5), in 32 about 8.6; 16K and 32K
+# in 126 partitions 14 and 14.9 us, in 32 about 9.3 and 10.8. Long KV keeps every row (1M: 65 blocks each).
+HEADS_IN_ROWS_MERGE_PARTITIONS = 32
+HEADS_IN_ROWS_PARTITION_MIN_BLOCKS = 8
+
+
+# A launch whose rows do not fit one wave of SMs runs in several, with at most HEADS_IN_ROWS_WAVE_ROWS rows per
+# request, only when the wave model below puts its time at HEADS_IN_ROWS_WAVE_TIME of the largest one-wave
+# launch's or less (finer rows cost a few percent at 8K KV tokens: 125 requests 234 -> 245 us with six rows
+# each).
+HEADS_IN_ROWS_WAVE_ROWS = 8
+HEADS_IN_ROWS_WAVE_TIME = 0.95
+# The most rows one request owns: the extent of the partition buffers, which serving.Limits bounds with it.
+HEADS_IN_ROWS_REQUEST_ROWS = 256
+
+
+def heads_in_rows_work_rows(batch, *, sm_count=148):
+    """Work rows (CTAs) of a heads-in-rows launch of `batch` requests: a whole number per request, so that
+    equal KV lengths get equal shares.
+
+    The launch is memory-bound: HEADS_IN_ROWS_CTAS_PER_SM CTAs per SM (the budget) draw the full bandwidth, and
+    the rows run in waves of sm_count. The fewest rows per request that reach the budget are taken when they
+    fit one wave. Otherwise a wave that is not full wastes time. With p rows per request a row reads 1/p of a
+    request, a full wave takes as long as sm_count rows and a last wave of n rows as long as max(n, budget) of
+    them, so the launch takes (full waves * sm_count + max(n, budget)) / (p * sm_count) times as long as one
+    full wave of rows that each read a whole request. The largest count that fits one wave is kept unless one
+    of 1..HEADS_IN_ROWS_WAVE_ROWS rows per request is predicted HEADS_IN_ROWS_WAVE_TIME of its time or less;
+    batches beyond the SM count take the best of those.
+
+    B300 (148 SMs), one captured graph, 256K KV tokens per request, by rows per request: 25 requests 404 us with
+    six (150 rows: two CTAs wait for an SM) and 295 us with five; 50 requests 801 us with three, 616 with two,
+    581 with eight (two full waves and 104); 75 requests 1085 us with one, 1197 with two, 879 with seven;
+    90 requests 1178 with one, 1004 with eight; 130 and 148 requests are fastest with one. Over the batches
+    swept (38 to 148 requests, one to eight rows each) the count taken is the fastest measured one or within
+    5 % of it. Pure host arithmetic.
+    """
+    budget = -int(-HEADS_IN_ROWS_CTAS_PER_SM * sm_count // 1)
+    per_request = max(1, -(-budget // batch))
+    if batch * per_request <= sm_count:
+        return batch * per_request
+
+    def waves(rows_per_request):   # the launch's time in those units, as an exact fraction
+        full, last = divmod(batch * rows_per_request, sm_count)
+        return Fraction(full * sm_count + (max(last, budget) if last else 0), rows_per_request * sm_count)
+
+    best = min(range(1, HEADS_IN_ROWS_WAVE_ROWS + 1), key=lambda count: (waves(count), count))
+    one_wave = sm_count // batch
+    if one_wave and waves(best) > HEADS_IN_ROWS_WAVE_TIME * waves(one_wave):
+        best = one_wave
+    return batch * best
+
+
+def heads_in_rows_partition_counts(kv_lens, rows):
+    """Partitions (work rows) per request for the given KV lengths.
+
+    One each; the other rows in proportion to a request's KV blocks beyond its first (largest remainders first,
+    ties to the earlier request), which equalises the blocks per partition. A request takes at most one
+    partition per KV block, beyond HEADS_IN_ROWS_MERGE_PARTITIONS only partitions of at least
+    HEADS_IN_ROWS_PARTITION_MIN_BLOCKS blocks, and never more than HEADS_IN_ROWS_REQUEST_ROWS; the rows it
+    leaves go to the other requests in the same proportion. Partitions are equal multiples of a block, so a
+    request keeps only as many as hold one; some rows may stay unused. Pure host arithmetic.
+    """
+    blocks = [(int(n) + 127) // 128 for n in kv_lens]
+    limit = [min(count, HEADS_IN_ROWS_REQUEST_ROWS,
+                 max(HEADS_IN_ROWS_MERGE_PARTITIONS, -(-count // HEADS_IN_ROWS_PARTITION_MIN_BLOCKS))) - 1
+             for count in blocks]
+    extra = [0] * len(blocks)
+    open_ = [i for i, value in enumerate(limit) if value]
+    spare = rows - len(blocks)
+    while open_ and spare > 0:
+        total = sum(blocks[i] - 1 for i in open_)
+        full = [i for i in open_ if (blocks[i] - 1) * spare >= limit[i] * total]
+        if not full:
+            for i in open_:
+                extra[i] = (blocks[i] - 1) * spare // total
+            order = sorted(open_, key=lambda i: (-((blocks[i] - 1) * spare % total), i))
+            for i in order[:spare - sum(extra[i] for i in open_)]:
+                extra[i] += 1
+            break
+        # These requests reach their limit: fix them and share the rest among the others.
+        for i in full:
+            extra[i] = limit[i]
+            spare -= limit[i]
+        open_ = [i for i in open_ if i not in full]
+    # The router gives every partition ceil(blocks / partitions) blocks: drop the ones that would get none.
+    return [-(-count // -(-count // (1 + value))) for count, value in zip(blocks, extra)]
+
+
 # Batch-one plans, and packed plans whose KV fits 8192 tokens, run Fixed attention beside the Index on a side
 # stream. A PB1024 launch that leaves SMs idle then hands them to Fixed attention, and a finer width that fills
 # them delays it: beside Fixed attention a finer width is kept only when it shortens the makespan by at least

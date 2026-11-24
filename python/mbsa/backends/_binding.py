@@ -7,6 +7,18 @@ from types import MethodType
 import torch
 
 
+def explicit_device(device) -> torch.device:
+    """Return torch.device(device) with a CUDA index: a bare "cuda" names the device current at the call.
+
+    Runner and warmup caches key on the result, so that one bare name never stands for two GPUs. The call
+    does not initialize CUDA: until it is initialized the current device is 0.
+    """
+    device = torch.device(device)
+    if device.type == "cuda" and device.index is None:
+        return torch.device("cuda", torch.cuda.current_device() if torch.cuda.is_initialized() else 0)
+    return device
+
+
 def _copy_object(value):
     result = copy.copy(value)
     for name, item in vars(value).items():

@@ -45,6 +45,7 @@ def _bind(env, qn=1024, kv=65536, dtype=torch.bfloat16, lean_router=False, lean1
     from mbsa.backends.optimized import index
     plan = mock.MagicMock()
     plan.attention.fixed_only = False
+    plan.attention.query_outer = False
     plan.overlap_fixed_score = beside_fixed
     plan.mxfp6_router = None
     plan.cutedsl_packed_tile_metadata = None

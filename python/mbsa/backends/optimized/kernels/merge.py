@@ -22,7 +22,7 @@ import torch
 import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, Int64
+from cutlass import Float32, Int32, Int64
 from cutlass.cute.runtime import from_dlpack
 
 
@@ -116,6 +116,141 @@ class _MergeTwoAttentionStates:
                     fixed_weight * fixed_value + dynamic_weight * dynamic_value
                 ) * inv_denominator
                 mOut[row, column] = merged.to(mOut.element_type)
+
+
+_COMBINE_KERNELS: dict[tuple, object] = {}
+
+
+class _CombineSplitAttentionStates:
+    """CuTe DSL combine of the split states of one-token tiles (flash_fwd_sm100 num_splits).
+
+    Row (token, head) reads the states of its first min(splits, blocks of the token's list) splits: the list
+    is the token's fixed blocks (its visible blocks, at most 16) followed by its routed blocks. A row is four
+    warps, one per 32 output columns; a lane holds one split's LSE and weight while the warp reduces them.
+    """
+
+    threads = 256
+    rows_per_cta = threads // 128
+
+    def __init__(self, splits: int):
+        self.splits = int(splits)
+        if not 1 < self.splits <= 16:
+            raise ValueError("the combine reads 2 to 16 splits")
+
+    @cute.jit
+    def __call__(
+        self,
+        mSplitO: cute.Tensor,
+        mSplitLSE: cute.Tensor,
+        mRoute: cute.Tensor,
+        mTiles: cute.Tensor,
+        mOut: cute.Tensor,
+        mOutLSE: cute.Tensor,
+        stream: cuda.CUstream,
+    ):
+        self.kernel(mSplitO, mSplitLSE, mRoute, mTiles, mOut, mOutLSE).launch(
+            grid=(cute.ceil_div(mOut.shape[0], self.rows_per_cta),),
+            block=(self.threads, 1, 1),
+            stream=stream,
+            use_pdl=True,
+        )
+
+    @cute.kernel
+    def kernel(
+        self,
+        mSplitO: cute.Tensor,
+        mSplitLSE: cute.Tensor,
+        mRoute: cute.Tensor,
+        mTiles: cute.Tensor,
+        mOut: cute.Tensor,
+        mOutLSE: cute.Tensor,
+    ):
+        # The split states come from the attention pass launched before this kernel.
+        cute.arch.griddepcontrol_wait()
+        tidx = cute.arch.thread_idx()[0]
+        lane = tidx % 32
+        warp = tidx // 32
+        row = Int32(cute.arch.block_idx()[0]) * self.rows_per_cta + Int32(warp // 4)
+        column = lane + (warp % 4) * 32
+        if row < mOut.shape[0]:
+            token = row // H_Q
+            head = row - token * H_Q
+            # The token's list: its visible blocks up to 16 (fixed), then its routed blocks (valid IDs first).
+            # Only the first `splits` routed slots can change min(list, splits).
+            routed = Int32(-1)
+            if lane < self.splits:
+                routed = mRoute[head // HEADS_PER_KV, token, lane]
+            blocks = (mTiles[token, 5] - mTiles[token, 4] + Int32(PAGE - 1)) // Int32(PAGE)
+            valid = cutlass.min(
+                cutlass.min(blocks, Int32(16)) + Int32(cute.arch.popc(cute.arch.vote_ballot_sync(routed >= Int32(0)))),
+                Int32(self.splits))
+            # Split s of the token is output row token * splits + s of the pass: H_Q state rows further on.
+            base = token * Int32(self.splits * H_Q) + head
+            split_lse = -Float32.inf
+            if lane < valid:
+                split_lse = Float32(mSplitLSE[base + lane * Int32(H_Q)])
+            max_lse = split_lse
+            for step in cutlass.range_constexpr(5):
+                max_lse = cute.arch.fmax(max_lse, cute.arch.shuffle_sync_bfly(max_lse, 16 >> step))
+            # Natural-log LSE; CuTe provides exp2. A lane without a split has weight 0.
+            denominator = cute.math.exp2((split_lse - max_lse) * 1.4426950408889634, fastmath=True)
+            for step in cutlass.range_constexpr(5):
+                denominator = denominator + cute.arch.shuffle_sync_bfly(denominator, 16 >> step)
+            total = Float32(0.0)
+            for split in cutlass.range(valid):
+                state = base + split * Int32(H_Q)
+                weight = cute.math.exp2(
+                    (Float32(mSplitLSE[state]) - max_lse) * 1.4426950408889634, fastmath=True
+                )
+                total += weight * Float32(mSplitO[state, column])
+            if tidx % 128 == 0:
+                mOutLSE[row] = cute.math.log(denominator, fastmath=True) + max_lse
+            mOut[row, column] = (total / denominator).to(mOut.element_type)
+
+
+def prepare_split_combine(split_o, split_lse, route, tiles, out, out_lse, splits):
+    """Compile (once per layout) the combine of split attention states and wrap its operands.
+
+    Args:
+        split_o: Contiguous [T * splits, 32, 128] states of the split pass, token t's split s in row t * splits + s.
+        split_lse: Contiguous FP32 [T * splits, 32] natural-log LSE of those states.
+        route: Contiguous int32 [4, T, 16] routed blocks the pass read (valid IDs first, negative padding).
+        tiles: Contiguous int32 [T, 6] packed tiles of the pass (columns 4 and 5 bound each token's KV).
+        out: Contiguous [T, 32, 128] final output.
+        out_lse: Contiguous FP32 [T, 32] final natural-log LSE.
+        splits: Splits per tile of the pass.
+
+    Returns:
+        (compiled, arguments): launch with compiled(*arguments, stream) after the pass, on its stream.
+    """
+    rows = out.numel() // D
+    if (split_o.numel() != rows * splits * D or split_lse.numel() != rows * splits or out_lse.numel() != rows
+            or tuple(route.shape) != (H_KV, rows // H_Q, 16) or tuple(tiles.shape) != (rows // H_Q, 6)
+            or not all(t.is_contiguous() for t in (split_o, split_lse, route, tiles, out, out_lse))):
+        raise ValueError("split states, route, tiles and outputs must be contiguous and match [T,32,128]")
+
+    def dynamic(tensor, align=16, mode=0):
+        return from_dlpack(tensor, assumed_align=align).mark_compact_shape_dynamic(
+            mode=mode, stride_order=tuple(range(tensor.dim()))
+        )
+
+    # The kernel is compiled once per split count: every extent that follows the batch is a run-time value
+    # (the route is [4, T, 16]).
+    arguments = (
+        dynamic(split_o.detach().reshape(rows * splits, D)),
+        dynamic(split_lse.detach().reshape(rows * splits)),
+        dynamic(route.detach(), 4, mode=1),
+        dynamic(tiles.detach(), 4),
+        dynamic(out.detach().reshape(rows, D)),
+        dynamic(out_lse.detach().reshape(rows)),
+    )
+    key = (split_o.dtype, out.dtype, out.device.index, int(splits))
+    compiled = _COMBINE_KERNELS.get(key)
+    if compiled is None:
+        stream = cuda.CUstream(torch.cuda.current_stream(out.device).cuda_stream)
+        compiled = cute.compile(_CombineSplitAttentionStates(splits), *arguments, stream)
+        _COMBINE_KERNELS[key] = compiled
+    return compiled, arguments
 
 
 def _merge_two_attention_states_cutedsl(
